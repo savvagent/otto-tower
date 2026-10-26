@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.15.0](https://github.com/savvagent/otto-tower/compare/v0.14.1...v0.15.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **of-mcp:** send_message no longer takes `to`; send_message, inbox, ack_messages and unread_count each require exactly one channel: repo (or remote) or team. ack_messages refuses an upTo that is not 0 and not a message the caller can read in that channel.
+* **of-core:** register_repo refuses repo slugs outside [A-Za-z0-9][A-Za-z0-9._/-]{0,127} (invalid_repo_slug); RepoUnresolved quotes and caps the registered slug list.
+
+### Features
+
+* **of-billing:** re-declare the meter when the platform reports unknown_meter ([#242](https://github.com/savvagent/otto-tower/issues/242)) ([3acc11e](https://github.com/savvagent/otto-tower/commit/3acc11e43f9caf1354b42320c534af07550a495a))
+* **of-mcp:** scope messages to a repo or team channel ([#254](https://github.com/savvagent/otto-tower/issues/254)) ([e432963](https://github.com/savvagent/otto-tower/commit/e432963f7a7c4a7ae96c15d84174dda422e1c714)), closes [#177](https://github.com/savvagent/otto-tower/issues/177)
+* **of-server:** report a stalled meter declaration on /readyz ([#243](https://github.com/savvagent/otto-tower/issues/243)) ([71a494a](https://github.com/savvagent/otto-tower/commit/71a494a7054445f2baa6cb8b9a33410f1c3ec3a2))
+* **of-web:** default new tracker bindings to the otto-tower label ([#245](https://github.com/savvagent/otto-tower/issues/245)) ([10e0fd1](https://github.com/savvagent/otto-tower/commit/10e0fd1d024a8fb5458978447513e949f837b4f9))
+
+
+### Bug Fixes
+
+* **of-core:** shape-check repo slugs and quote them in unresolved-repo errors ([#249](https://github.com/savvagent/otto-tower/issues/249)) ([b98761d](https://github.com/savvagent/otto-tower/commit/b98761d7b26fab3de371e5e2feac389905e5debd))
+* **of-trackers:** do not treat a GitHub duplicate close as a completed job ([#240](https://github.com/savvagent/otto-tower/issues/240)) ([176e183](https://github.com/savvagent/otto-tower/commit/176e1836bf17c5d654725a89067b6efd8958df89))
+* **web:** name the otto-tower GitHub App in the console and tests ([#244](https://github.com/savvagent/otto-tower/issues/244)) ([4d642f8](https://github.com/savvagent/otto-tower/commit/4d642f84b7ae6501c1c5dbc050309d155dcd52cc))
+
 ## [0.14.1](https://github.com/savvagent/otto-factory/compare/v0.14.0...v0.14.1) (2026-10-21)
 
 
