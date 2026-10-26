@@ -141,7 +141,10 @@ pub fn serialize_stored<S: serde::Serializer>(
 /// agent's name should look like. Unassigned code points are not refused —
 /// detecting them needs a Unicode version table this crate does not carry —
 /// and the quoting in [`holder`] is the backstop for anything this misses.
-fn is_forbidden(c: char) -> bool {
+///
+/// Shared with `leases::acquire_lease`, which applies the same "one visible
+/// line" shape to a lease's `resource` (savvagent/otto-factory#209).
+pub(crate) fn is_forbidden(c: char) -> bool {
     c.is_control()
         || (c.is_whitespace() && c != ' ')
         || matches!(

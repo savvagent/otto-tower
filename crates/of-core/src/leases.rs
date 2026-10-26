@@ -130,6 +130,26 @@ impl LeasesExt for Tx<'_> {
                 resource.len()
             )));
         }
+        // Same shape rule as an agent label: `list_leases` hands a peer's
+        // resource to every other member's agent, so a newline or bidi override
+        // here is a place to plant instruction-shaped text (#209). The message
+        // names the position, never the text. Not applied on the read side: a
+        // resource is an identifier agents pass back verbatim, so withholding or
+        // rewriting a stored one would break the caller. A pre-existing live
+        // lease that fails this rule needs no handling — it expires within
+        // `MAX_TTL_SECS`, and re-acquiring that name is now refused.
+        if let Some((i, c)) = resource
+            .chars()
+            .enumerate()
+            .find(|(_, c)| crate::agent_label::is_forbidden(*c))
+        {
+            return Err(Error::Invalid(format!(
+                "lease resource contains U+{:04X} at character {}; a resource must be one line of \
+                 visible text",
+                c as u32,
+                i + 1
+            )));
+        }
         // Before any SQL, so a refused label writes nothing — not even the
         // reap below. `LeaseHeld` quotes it to other members' agents (#163).
         let label = crate::agent_label::validate(label)?;
