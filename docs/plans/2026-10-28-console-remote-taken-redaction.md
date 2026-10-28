@@ -11,7 +11,7 @@ today, so this is defence in depth, not a live leak.
 
 ## Status — 2026-10-28
 
-⬜ Not started.
+🚧 Implemented on `web/redact-remote-taken`; in review.
 
 ## Global Constraints
 
@@ -40,7 +40,7 @@ today, so this is defence in depth, not a live leak.
 One task: the move and the new call sites must land together (the of-mcp copy is deleted in the
 same commit its replacement appears), and the tests are of the same behaviour.
 
-## Task 1 — Shared redaction, applied on the console ⬜
+## Task 1 — Shared redaction, applied on the console ✅
 
 **Files:** as above. **Interfaces:** produces `of_core::teams::TeamScope::redact_foreign_ids(&self,
 e: of_core::Error) -> of_core::Error`; consumes `OrgCtx::team_scope`.
