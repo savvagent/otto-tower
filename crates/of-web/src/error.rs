@@ -292,7 +292,7 @@ mod tests {
     /// takes the same branch whether or not the owning repo was named.
     #[test]
     fn a_redacted_remote_taken_is_still_a_conflict_with_its_code() {
-        let scope = of_core::teams::TeamScope::Teams(Default::default());
+        let scope = of_core::teams::TeamScope::Teams(std::collections::HashSet::new());
         let e = scope.redact_foreign_ids(CoreError::RemoteTaken(
             "github.com/acme/secret".into(),
             "secret-repo".into(),

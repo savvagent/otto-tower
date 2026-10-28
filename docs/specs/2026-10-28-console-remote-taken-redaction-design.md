@@ -33,9 +33,14 @@ on both surfaces rather than by coincidence on one.
   `TeamScope::redact_foreign_ids(&self, e: Error) -> Error`, unchanged in behaviour and wording.
   `of-web` cannot depend on `of-mcp` (they are siblings over `of-core`), so a shared rule has to
   live below both.
-- `of-mcp`'s five call sites call the `of-core` method; the `of-mcp` copy is deleted.
+- `of-mcp`'s six call sites (four in `tools/jobs.rs`, two in `tools/repos.rs`) call the `of-core` method; the `of-mcp` copy is deleted.
 - `of-web`'s `register_repo` and `update_repo` build the caller's `TeamScope` (free for admins: no
   platform call) and pass any `of-core` error through it.
+- `of-web`'s `update_repo` resolves its target through the same scope, held for update
+  (`resolve_repo_visible_held(.., Hold::ForUpdate)`, what MCP's `update_repo` does through
+  `repo_for_write`), instead of the unscoped `resolve_repo`. Added in review: without it the
+  handler's own target lookup would still name, and write to, a hidden repo once the admin gate
+  is relaxed, so the redaction alone would only half-apply the rule.
 - Tests (§3).
 
 **Out:**
@@ -64,8 +69,12 @@ map the `register_repo` / `update_repo` result with `|e| scope.redact_foreign_id
 (`crates/of-web/src/error.rs`), and the body keeps `code: "remote_taken"`, so a console client
 branching on the code sees no difference.
 
-`update_repo` still resolves its target with `resolve_repo` (not `_visible`); admins see every
-repo, and changing that is out of scope here.
+`update_repo` resolves its target with `resolve_repo_visible_held(.., &scope, Hold::ForUpdate)`:
+a repo the scope cannot see is `404 repo_unresolved` like a missing one, its slug kept out of the
+error's list of registered repos, and the row is held so a team reassignment cannot commit between
+the visibility check and the write. For admins (`TeamScope::All`) the result is the same repo
+`resolve_repo` returned, now locked for the rest of the transaction, which `update_repo` writes
+anyway.
 
 ## §3 Testing
 
@@ -91,8 +100,11 @@ repo, and changing that is out of scope here.
   callers already hold a `TeamScope`; a free function in `error.rs` would need to import `teams`
   the other way round.
 - **The `of-web` integration test cannot drive the redacted branch over HTTP** while the admin gate
-  stands; it pins the observable invariant (a member's response never names the hidden repo, an
-  owner's does) and the unit tests pin the redaction itself.
+  stands. It pins the member's answer to exactly `403` (so relaxing the gate fails it on purpose
+  and forces a decision about what a team-limited caller sees), and the owner's `409` naming the
+  repo; the unit tests pin the redaction itself. Deleting a route's `map_err` is therefore not
+  caught by a test today. Extracting the handler body to test it with a hand-built `TeamScope` was
+  judged heavier than this defence-in-depth change warrants; the gate's tripwire is the guard.
 
 ## Goal & success criteria
 

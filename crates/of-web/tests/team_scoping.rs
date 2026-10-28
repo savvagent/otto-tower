@@ -179,10 +179,14 @@ async fn a_hidden_repo_is_not_found_and_not_named_anywhere(pool: PgPool) {
 
 /// A remote already owned by a hidden repo must not name that repo: not when a
 /// member registers a repo with it, and not when one adds it to a repo they
-/// can see. Today both writes are admin-only, so the member is refused before
-/// the conflict is found; the console still redacts `remote_taken` for a
-/// team-limited caller (`TeamScope::redact_foreign_ids`, as MCP does), so the
-/// rule holds whichever check catches it. An owner is told which repo it is.
+/// can see. An owner is told which repo it is.
+///
+/// Today both writes are admin-only, so this test can only observe the admin
+/// gate: the member is refused `403` before the conflict is found. The member's
+/// status is pinned to exactly that so the test fails, on purpose, if the gate
+/// is ever relaxed, and whoever relaxes it has to decide what a team-limited
+/// caller should see here. The redaction itself (`TeamScope::redact_foreign_ids`)
+/// is pinned by the unit tests in `of-core` and in `of-web/src/error.rs`.
 #[sqlx::test(migrations = "../of-core/migrations")]
 async fn a_taken_remote_never_names_a_hidden_repo(pool: PgPool) {
     let w = world(pool).await;
@@ -207,7 +211,7 @@ async fn a_taken_remote_never_names_a_hidden_repo(pool: PgPool) {
 
     for call in [register(&w.bob), add_to_shared(&w.bob)] {
         let r = call.send(&w.h.router).await;
-        assert!(r.status.is_client_error(), "{} {}", r.status, r.text);
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.text);
         assert!(!r.text.contains("platform-repo"), "{}", r.text);
     }
 

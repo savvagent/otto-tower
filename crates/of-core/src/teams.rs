@@ -253,11 +253,12 @@ impl TeamScope {
     /// already linked to, the repo a remote belongs to, the far end of a
     /// dependency chain) must not name one this scope cannot see. The message is
     /// withheld and the code kept, so a caller branching on [`Error::code`] is
-    /// unaffected. Unrestricted callers get the error unchanged.
+    /// unaffected. Unrestricted callers get the error unchanged; for any
+    /// team-limited scope these errors are withheld outright, without checking
+    /// whether the named row is actually hidden from it.
     ///
-    /// The one definition both surfaces use: the MCP tools and the console's
-    /// repo writes, so the wording, and which errors are withheld, cannot drift
-    /// between them.
+    /// Every surface uses this one definition (see [`Error::Redacted`]), so the
+    /// wording, and which errors are withheld, cannot drift between them.
     pub fn redact_foreign_ids(&self, e: Error) -> Error {
         if self.is_all() {
             return e;
