@@ -37,7 +37,11 @@ What the code already does, checked against `master` at `a609b44`:
    webhook with action `edited` becomes `InboundDecision::Update`, which rewrites the job's title
    and description from the issue (`crates/of-trackers/src/sync.rs:92-105`). The issue's
    non-goal is already broken for bound repos, and this change leaves that alone. What is
-   actually lost is **comments**: an `issue_comment` with action `created` is a `NoOp`. The job
+   actually lost is **comments**: `inbound_decision` maps an `issue_comment` with action `created`
+   to a `NoOp`, and (found during implementation) the webhook route skipped every comment event
+   before calling it at all, so no comment ever reached a job. This change lets GitHub comment
+   events through, and a comment on an issue with no job is a `NoOp`, never a `Create`. JIRA
+   comment events are still skipped. The job
    in the motivating session (job-52) had no tracker binding at all, so it got no signal of
    either kind.
 3. **`sync_ticket` is outbound-only and refuses pending jobs**
