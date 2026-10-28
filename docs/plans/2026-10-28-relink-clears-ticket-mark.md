@@ -10,7 +10,11 @@ implements it exactly.
 
 ## Status — 2026-10-28
 
-🚧 Implemented on `core/relink-clears-ticket-mark`; in review.
+✅ Shipped in PR #267 (squash dbf9a38). Review added two tests
+(`relinking_to_another_tracker_with_the_same_ref_clears_the_mark`, `a_refused_relink_keeps_the_mark`)
+and doc wording (the `Job` field docs and the `link_ticket` tool description in
+`crates/of-mcp/src/tools/jobs.rs`) saying the `ticket_ref` is compared exactly and to run `sync_ticket`
+after relinking the same issue under another name; no follow-up issues.
 
 ## Global Constraints
 
