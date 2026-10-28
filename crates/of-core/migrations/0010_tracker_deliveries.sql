@@ -2,15 +2,19 @@
 -- does nothing (savvagent/otto-factory#265).
 --
 -- GitHub's `X-Hub-Signature-256` is an HMAC over the body alone, with no
--- timestamp, so a captured signed delivery stays valid forever. A row is
--- written in the same pinned transaction as the delivery's effects (as
--- `platform_events` is for the platform's webhooks): a delivery that fails
--- rolls its row back and GitHub's retry still applies.
+-- timestamp, so a captured signed delivery stays valid until the webhook secret
+-- is rotated. A row is written in the same pinned transaction as the delivery's
+-- effects (as `platform_events` is for the platform's webhooks): a delivery
+-- that fails rolls its row back, and a manual redelivery of it (GitHub does not
+-- retry on its own) still applies. An event that matched no binding or was
+-- dropped still commits its row: it was judged, and is not judged again.
 --
 -- Two keys, either of which makes a delivery a repeat:
---   * `body_sha256`, the digest of the signed body. A replay must send the
---     same bytes, because the signature covers them; this is the key that
---     stops a replay.
+--   * `digest`, SHA-256 over the `X-GitHub-Event` name, a NUL byte and the
+--     signed body. A replay must send the same body bytes, because the
+--     signature covers them; this is the key that stops a replay. The event
+--     name is unsigned, and is bound in so that a body sent under the wrong
+--     event cannot pre-empt the genuine delivery.
 --   * `delivery_id`, GitHub's `X-GitHub-Delivery`. It is NOT signed, so on its
 --     own it would stop only GitHub's own redeliveries (which reuse it), never
 --     a replay sent under a fresh id. NULL when the header was absent.
@@ -25,10 +29,10 @@
 CREATE TABLE tracker_deliveries (
   org_id      uuid             NOT NULL,
   provider    tracker_provider NOT NULL,
-  body_sha256 bytea            NOT NULL CHECK (octet_length(body_sha256) = 32),
+  digest      bytea            NOT NULL CHECK (octet_length(digest) = 32),
   delivery_id text             CHECK (delivery_id IS NULL OR length(delivery_id) BETWEEN 1 AND 128),
   received_at timestamptz      NOT NULL DEFAULT now(),
-  PRIMARY KEY (org_id, provider, body_sha256)
+  PRIMARY KEY (org_id, provider, digest)
 );
 
 CREATE UNIQUE INDEX tracker_deliveries_delivery_idx

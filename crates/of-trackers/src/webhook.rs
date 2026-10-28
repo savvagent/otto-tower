@@ -21,8 +21,9 @@ type HmacSha256 = Hmac<Sha256>;
 const GITHUB_SIGNATURE_HEADER: &str = "x-hub-signature-256";
 const GITHUB_EVENT_HEADER: &str = "x-github-event";
 const GITHUB_DELIVERY_HEADER: &str = "x-github-delivery";
-/// GitHub sends a 36-character GUID; this is generous headroom, and the same
-/// bound the `tracker_deliveries.delivery_id` column checks.
+/// GitHub sends a 36-character GUID; this is generous headroom. Visible ASCII
+/// is one character per byte, so it is also the bound the
+/// `tracker_deliveries.delivery_id` column checks (in characters).
 const MAX_DELIVERY_ID_LEN: usize = 128;
 pub const JIRA_WEBHOOK_SECRET_HEADER: &str = "x-of-webhook-secret";
 
@@ -296,30 +297,63 @@ fn parse_jira(raw_body: &[u8], site_id: String) -> Result<ParsedWebhook> {
     })))
 }
 
+/// What identifies a verified GitHub event for dedupe
+/// (`of_core::tracker_deliveries`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubDelivery {
+    /// `X-GitHub-Delivery`, if sent. Not covered by the signature, so it only
+    /// catches GitHub's own redeliveries, which reuse it.
+    pub id: Option<String>,
+    /// SHA-256 over the `X-GitHub-Event` name, a NUL byte, and the signed body.
+    /// The signature binds the body, so a replay must send the same bytes; the
+    /// event name is bound in too because it is **not** signed and decides how
+    /// the body is read, so the same body sent under another event is a
+    /// different delivery and cannot pre-empt the genuine one. A header value
+    /// cannot contain NUL, so the separator is unambiguous.
+    pub digest: [u8; 32],
+}
+
+/// The dedupe key of a GitHub delivery whose signature already verified.
+///
+/// A malformed `X-GitHub-Delivery` is an error, as is a missing
+/// `X-GitHub-Event` (which [`verify_and_parse`] has already required).
+pub fn github_delivery(headers: &HeaderMap, raw_body: &[u8]) -> Result<GithubDelivery> {
+    let id = github_delivery_id(headers)?;
+    let event = header_str(headers, GITHUB_EVENT_HEADER)?;
+    let mut hasher = Sha256::new();
+    hasher.update(event.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(raw_body);
+    Ok(GithubDelivery {
+        id,
+        digest: hasher.finalize().into(),
+    })
+}
+
 /// GitHub's `X-GitHub-Delivery` id for a request, if it sent one.
 ///
-/// The header is **not** covered by the signature, so it is only a dedupe key
-/// for GitHub's own redeliveries (which reuse it); the body digest is what stops
-/// a replay (`of_core::tracker_deliveries`). Absent is `Ok(None)`. Present but
-/// empty, longer than 128 bytes, or anything other than visible ASCII is an
+/// Absent is `Ok(None)`. Present but empty, longer than
+/// [`MAX_DELIVERY_ID_LEN`] bytes, or anything other than visible ASCII is an
 /// error, not "absent": GitHub never sends such a value, so it is a malformed
 /// request, rejected like any other.
-pub fn github_delivery_id(headers: &HeaderMap) -> Result<Option<String>> {
+fn github_delivery_id(headers: &HeaderMap) -> Result<Option<String>> {
     let Some(value) = headers.get(GITHUB_DELIVERY_HEADER) else {
         return Ok(None);
     };
     let bytes = value.as_bytes();
+    let malformed = || {
+        Error::InvalidWebhook(format!(
+            "webhook header {GITHUB_DELIVERY_HEADER} must be 1 to {MAX_DELIVERY_ID_LEN} visible \
+             ASCII characters"
+        ))
+    };
     if bytes.is_empty()
         || bytes.len() > MAX_DELIVERY_ID_LEN
         || !bytes.iter().all(u8::is_ascii_graphic)
     {
-        return Err(Error::InvalidWebhook(format!(
-            "webhook header {GITHUB_DELIVERY_HEADER} must be 1 to {MAX_DELIVERY_ID_LEN} visible \
-             ASCII characters"
-        )));
+        return Err(malformed());
     }
-    // Visible ASCII is valid UTF-8.
-    Ok(Some(String::from_utf8_lossy(bytes).into_owned()))
+    Ok(Some(value.to_str().map_err(|_| malformed())?.to_owned()))
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
@@ -774,6 +808,48 @@ mod tests {
                 "{bad:?} was accepted"
             );
         }
+    }
+
+    fn event_headers(event: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(GITHUB_EVENT_HEADER, event.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn the_delivery_digest_binds_the_event_name_and_the_body() {
+        let body = br#"{"action":"created"}"#;
+        let comment = github_delivery(&event_headers("issue_comment"), body).unwrap();
+        assert_eq!(comment.id, None);
+        assert_eq!(
+            comment.digest,
+            github_delivery(&event_headers("issue_comment"), body)
+                .unwrap()
+                .digest,
+            "the same event and body is the same delivery"
+        );
+        assert_ne!(
+            comment.digest,
+            github_delivery(&event_headers("issues"), body)
+                .unwrap()
+                .digest,
+            "the unsigned event header must not let one event pre-empt another"
+        );
+        assert_ne!(
+            comment.digest,
+            github_delivery(&event_headers("issue_comment"), br#"{"action":"edited"}"#)
+                .unwrap()
+                .digest
+        );
+        let mut with_id = event_headers("issues");
+        with_id.insert(
+            GITHUB_DELIVERY_HEADER,
+            "72d3162e-cc78-11e3-81ab-4c9367dc0958".parse().unwrap(),
+        );
+        assert_eq!(
+            github_delivery(&with_id, body).unwrap().id.as_deref(),
+            Some("72d3162e-cc78-11e3-81ab-4c9367dc0958")
+        );
     }
 
     fn jira_headers(secret: &str) -> HeaderMap {

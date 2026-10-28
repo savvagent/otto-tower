@@ -144,8 +144,8 @@ with) — and `current_org()` is NULL for the statement's entire lifetime, so
 every tenant**, forever. (`tracker_connection_index` is the one `org_id NOT NULL` table with no policy at all, deliberately
 — the unauthenticated tracker webhook route has to resolve an org before one is known. It has no
 second branch: an unscoped rewrite of it always hits the first outcome, on every deployment shape.
-`usage_outbox`'s and `platform_events`' policies have two branches, `org_id = current_org() OR
-current_org() IS NULL`, so org-less background code (the shipper, the event sweep) can reach every
+`usage_outbox`'s, `platform_events`' and `tracker_deliveries`' policies have two branches, `org_id = current_org() OR
+current_org() IS NULL`, so org-less background code (the shipper, the event and delivery sweeps) can reach every
 org's rows while a pinned transaction still sees only its own. A DELETE-only policy is not enough for
 that: a DELETE's `WHERE` reads the rows it filters, so the table's SELECT policies apply to it too,
 which is why `audit_events` has `audit_events_retention_read` beside `audit_events_retention`

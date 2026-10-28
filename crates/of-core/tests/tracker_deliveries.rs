@@ -105,7 +105,7 @@ async fn rls_scopes_tracker_deliveries_to_the_pinned_org(pool: PgPool) {
         .unwrap()
         .rows_affected();
     let forged = sqlx::query(
-        "INSERT INTO tracker_deliveries (org_id, provider, body_sha256) \
+        "INSERT INTO tracker_deliveries (org_id, provider, digest) \
          VALUES ($1, 'github', decode(repeat('ab', 32), 'hex'))",
     )
     .bind(a)
@@ -147,6 +147,8 @@ async fn the_sweep_reaches_every_org_where_rls_applies(pool: PgPool) {
     let rdb = Db::from_pool(restricted);
 
     assert_eq!(sweep(&rdb, 30).await.unwrap(), 2);
+    // A session left on the throwaway database would hang its teardown.
+    rdb.pool().close().await;
     assert_eq!(count_all(&pool).await, 1, "the fresh delivery was kept");
     // A swept delivery is no longer a repeat.
     assert!(record_one(&db, b, Some("old-b"), [2; 32]).await);

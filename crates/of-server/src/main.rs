@@ -169,9 +169,11 @@ async fn main() -> Result<()> {
 const PLATFORM_EVENT_RETENTION_DAYS: i32 = 30;
 
 /// How long tracker webhook deliveries are remembered as applied. A signed
-/// GitHub delivery replayed after this is applied again, guarded only by the
-/// job's own revision and `ticket_changed_at` checks; GitHub itself redelivers
-/// only within 3 days.
+/// GitHub delivery replayed after this is applied again: against an existing
+/// job only its revision and `ticket_changed_at` checks guard it, and if the job
+/// is gone a replayed `opened` or `labeled` event creates it again. GitHub
+/// itself allows a manual redelivery only within 3 days, and never retries on
+/// its own.
 const TRACKER_DELIVERY_RETENTION_DAYS: i32 = 30;
 
 /// Run [`of_core::platform_events::sweep`] and

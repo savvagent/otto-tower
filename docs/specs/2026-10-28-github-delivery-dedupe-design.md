@@ -1,7 +1,7 @@
 # GitHub webhook delivery dedupe design
 
 > **Status:** DRAFT — record every verified GitHub tracker-webhook event in a new tenant table,
-> keyed by its `X-GitHub-Delivery` id and by the SHA-256 of its signed body, in the same
+> keyed by its `X-GitHub-Delivery` id and by the SHA-256 of its event name and signed body, in the same
 > transaction as its effects, and acknowledge a repeat with `200` before `inbound_decision` runs.
 > Swept after 30 days. Closes savvagent/otto-factory#265.
 >
@@ -38,9 +38,12 @@ whether it comes back as GitHub's own redelivery or as an attacker's replay of a
 
 - A second delivery with an already-recorded `X-GitHub-Delivery` id answers `200 {"ok":true}` and
   changes nothing (no job created, rewritten, marked, or closed; no completion row).
-- A second delivery of a byte-identical signed body under a **different** (or no) delivery id is
-  treated the same way.
-- A delivery whose processing fails (a `5xx`) records nothing, so GitHub's retry still applies it.
+- A second delivery of a byte-identical signed body under the same `X-GitHub-Event` and a
+  **different** (or no) delivery id is treated the same way.
+- The same body sent under a different (unsigned) `X-GitHub-Event` is a different delivery, so it
+  cannot pre-empt the genuine one.
+- A delivery whose processing fails (a `5xx`) records nothing, so a manual redelivery (GitHub does
+  not retry on its own) still applies it.
 - The same delivery id or body in another org is not a repeat (per-org keys), and a pinned
   transaction cannot read, delete, or forge another org's rows (RLS test as `otto_app`).
 - Rows older than 30 days are deleted by the existing hourly sweeper, including where RLS applies
@@ -93,10 +96,10 @@ whether it comes back as GitHub's own redelivery or as an attacker's replay of a
 CREATE TABLE tracker_deliveries (
   org_id      uuid             NOT NULL,
   provider    tracker_provider NOT NULL,
-  body_sha256 bytea            NOT NULL CHECK (octet_length(body_sha256) = 32),
+  digest      bytea            NOT NULL CHECK (octet_length(digest) = 32),
   delivery_id text             CHECK (delivery_id IS NULL OR length(delivery_id) BETWEEN 1 AND 128),
   received_at timestamptz      NOT NULL DEFAULT now(),
-  PRIMARY KEY (org_id, provider, body_sha256)
+  PRIMARY KEY (org_id, provider, digest)
 );
 CREATE UNIQUE INDEX tracker_deliveries_delivery_idx
   ON tracker_deliveries (org_id, provider, delivery_id) WHERE delivery_id IS NOT NULL;
@@ -123,9 +126,9 @@ loop in `CLAUDE.md` does not apply.
 
 ```rust
 /// Record a verified delivery in `tx`; `false` if this org already recorded
-/// the same body or the same delivery id.
+/// the same digest or the same delivery id.
 pub async fn record(tx: &mut Tx<'_>, provider: Provider, delivery_id: Option<&str>,
-                    body_sha256: &[u8; 32]) -> Result<bool>;
+                    digest: &[u8; 32]) -> Result<bool>;
 /// Delete rows older than `keep_days`, for every org. Background only.
 pub async fn sweep(db: &Db, keep_days: i32) -> Result<u64>;
 ```
@@ -140,18 +143,25 @@ way.
 `sweep` is `DELETE FROM tracker_deliveries WHERE received_at < now() - make_interval(days => $1)`
 on the pool, like `platform_events::sweep`.
 
-## §3 Header
+## §3 Delivery key
 
-`of_trackers::webhook::github_delivery_id(headers) -> Result<Option<String>, WebhookError>`:
-absent → `Ok(None)` (the body digest still dedupes); present → must be 1–128 bytes of visible ASCII
-(GitHub sends a GUID), else an error the route answers with the same uniform `404` as any other
-rejected webhook. It is read only after the signature verifies, so an unsigned request never reaches
-it.
+`of_trackers::webhook::github_delivery(headers, raw_body) -> Result<GithubDelivery>` owns what makes
+a GitHub delivery unique, so `of-web` only passes it on. `GithubDelivery { id, digest }`:
+
+- `id` is `X-GitHub-Delivery`: absent → `None` (the digest still dedupes); present → must be 1–128
+  bytes of visible ASCII (GitHub sends a GUID), else an error the route answers with the same uniform
+  `404` as any other rejected webhook.
+- `digest` is SHA-256 over the `X-GitHub-Event` value, a NUL byte, and the raw signed body. The event
+  header is not signed and decides how the body is parsed (an `issue_comment` body also parses as an
+  `issues` payload), so binding it in stops a body sent first under the wrong event from using up the
+  genuine delivery. A header value cannot contain NUL, so the encoding is unambiguous.
+
+It is computed only after the signature verifies, so an unsigned request never reaches it.
 
 ## §4 Route
 
 In `receive`, for `Provider::Github` with `ParsedWebhook::Event`, the route computes
-`sha2::Sha256::digest(raw_body)` once and calls `tracker_deliveries::record` at the start of **each**
+`github_delivery` once and calls `tracker_deliveries::record` at the start of **each**
 pass, before `apply`:
 
 - pass 1, in the transaction `begin_live` opened. `false` → log at info (`provider`, `org_id`,
@@ -162,7 +172,8 @@ pass, before `apply`:
   event committed during the standing lookup; it is acknowledged the same way.
 
 The record therefore commits only with the delivery's effects, as `platform_events` records its
-events (`first_delivery`): a delivery that fails rolls its record back, and GitHub's retry applies.
+events (`first_delivery`): a delivery that fails rolls its record back, and a manual redelivery
+applies.
 
 ## §5 Retention and purge
 
@@ -180,15 +191,19 @@ match a recorded delivery again).
   and can forge none of another org's rows; `sweep` deletes only rows past the window, for two orgs,
   on a pool running as `otto_app` (the `housekeeping_deletes_where_row_level_security_applies`
   shape); `org_deleted` purges the org's rows.
-- `of-trackers`: `github_delivery_id` absent / valid / oversized / non-ASCII.
+- `of-trackers`: `github_delivery_id` absent / valid / oversized / non-ASCII; `github_delivery`'s
+  digest differs by event name and by body.
 - `of-web` (`tests/webhooks_http.rs`). The existing guards (`remote_revision`, `ticket_changed_at`)
   would also drop most repeats, so each test first clears the job's `ticket_changed_at` with direct
   SQL (the state #264's relink can leave) so that only the dedupe can be what drops the repeat:
   (a) a comment under delivery id X marks the job; after the reset, a *different* comment body under
   the same X is `200` and leaves `ticket_changed_at` NULL; the same body under a new id Y then marks
   it (control). (b) a comment marks the job; after the reset, the byte-identical body and signature
-  under a new delivery id is `200` and leaves it NULL. (c) a malformed delivery id is `404`. Existing
-  tests that post an identical body twice keep passing.
+  under a new delivery id is `200` and leaves it NULL; a different body under a new id then applies
+  (control). (c) a malformed delivery id is `404`. (d) a comment body sent first under `issues` does
+  not stop the genuine `issue_comment` delivery from marking the job. (e) a billed close (the
+  two-pass path) leaves its delivery recorded. Existing tests that post an identical body twice
+  forget the delivery records before the repeat, so they still exercise the job's own guards.
 - `of-server`: `the_whole_router_assembles` unchanged; the sweeper change is covered by the of-core
   sweep test.
 
@@ -196,9 +211,12 @@ match a recorded delivery again).
 
 - **Database error in `record`** → `ApiError::from` → `5xx`, transaction rolled back, GitHub
   retries. Never read as "not a repeat".
-- **Delivery recorded but binding missing** (an event for a repo not yet bound): recorded anyway; a
-  manual GitHub redelivery after binding the repo within 30 days is acknowledged as a repeat. Rare,
-  and `sync_ticket` / a later issue event still bring the job in. Documented here, accepted.
+- **Delivery recorded but binding missing, or the event dropped** (an event for a repo not yet
+  bound, or an action `inbound_decision` drops): recorded anyway, so a manual GitHub redelivery after
+  binding the repo within 30 days is acknowledged as a repeat. Accepted: an event is judged once;
+  `sync_ticket` or a later change on the ticket brings the job in. Recording it also means a body
+  captured before the repo was bound cannot be replayed into it afterwards, within the window. The
+  route's comment says so.
 - **Connection changed between passes** (the existing `still_verified` drop): returns before pass
   2's `record`, so nothing is recorded and a retry is not mistaken for a repeat.
 - **Missing delivery header**: body digest only.
@@ -215,5 +233,20 @@ match a recorded delivery again).
 ## Risks & Open Questions
 
 - **Another PR adds `0010` first.** Renumber at PR time.
-- **Retention past 30 days**: a replay then is applied again, bounded by the existing monotonic
-  guards (`remote_revision` for issues; `ticket_changed_at` for comments, once per job).
+- **Retention past 30 days**: a replay then is applied again. Against an existing job it is bounded
+  by the monotonic guards (`remote_revision` for issues; `ticket_changed_at` for comments, once per
+  job); if the job is gone, a replayed `opened` or `labeled` event creates it again. Closing this
+  needs an acceptance window on the payload's own timestamp no longer than the retention window;
+  left to a follow-up issue.
+- **Installation moved to another org**: the GitHub App's signing secret is app-wide, but the keys
+  are per org, so bodies recorded under the old org are unseen by the new one. Accepted: moving an
+  installation is a rare admin action, and a cross-org unique key would let one tenant's rows decide
+  another's writes. Recorded in the follow-up issue.
+- **The unsigned delivery id can mark an unused id as seen**: someone holding a signed body this org
+  has not recorded can send it under a guessed future GUID, so GitHub's later genuine delivery under
+  that id is dropped. Accepted: it needs both such a body and a GitHub delivery GUID before GitHub
+  issues it, and the id key is what the issue's acceptance criterion names. Recorded in the follow-up
+  issue.
+- **Two genuinely different events with byte-identical bodies** (for example label, unlabel and
+  relabel within one second, since GitHub timestamps have one-second resolution) are one delivery:
+  the second is dropped. Accepted as rare; a later change on the ticket corrects it.
