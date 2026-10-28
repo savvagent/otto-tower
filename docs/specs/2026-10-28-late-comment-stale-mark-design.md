@@ -101,7 +101,9 @@ an event already accounted for. The webhook route handles both identically (no w
 No behaviour change. The comment beside the `Changed` arm in `crates/of-web/src/routes/webhooks.rs`
 is updated: a redelivered comment is now guarded in `inbound_decision` by `ticket_changed_at`, with
 `GREATEST` in `note_ticket_changed_if_linked` as the second line (two deliveries racing past the
-guard on separate connections still store the later time once).
+guard on separate connections still store the later time once). In `sync.rs`, the bot-filter
+comment ("so the echo check above cannot catch it") and the `InboundDecision::Changed` doc comment
+are updated to match: no echo check runs ahead of a comment any more.
 
 ## Assumptions
 

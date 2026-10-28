@@ -45,18 +45,22 @@ needs no code change.
 `InboundDecision` is unchanged.
 
 - [ ] In `crates/of-trackers/tests/sync.rs`, replace `inbound_github_echoed_comment_is_dropped`
-  with `inbound_github_comment_already_counted_is_dropped`: a job with `ticket_changed_at =
-  2026-09-03T12:00:00Z`, a human comment at `12:00:00Z` and at `11:00:00Z` → `Drop`.
+  with `inbound_github_comment_already_counted_is_dropped`: a job with `remote_revision`
+  `2026-09-03T10:00:00Z` (older than both comments, so today's echo check passes them and the test
+  fails first) and `ticket_changed_at = 2026-09-03T12:00:00Z`, set on the `Job` the `job()` helper
+  returns; a human comment at `12:00:00Z` and at `11:00:00Z` → `Drop`.
 - [ ] Add `inbound_github_comment_older_than_the_stored_revision_is_changed`: job
   `remote_revision = 2026-09-03T12:00:00Z`, comment at `12:00:00Z` (same second) and at
   `11:00:00Z`, with `ticket_changed_at` `None` and with `10:00:00Z` → `Changed { at }`.
 - [ ] Run `cargo test -p of-trackers --test sync`. Expected: both new tests fail (`Drop` returned
   for the late comment; `Changed` returned for the already-counted one).
 - [ ] In `crates/of-web/tests/webhooks_http.rs`, add
-  `a_comment_delivered_after_a_later_issue_edit_still_marks_the_job`: open issue, post an issue
-  edit at `hours_from_now(2)`, then a human comment at `hours_from_now(1)` twice. Assert `200`
-  each time, `ticket_stale`, `ticket_changed_at == t1`, description is the edit's body,
-  `remote_revision == t2`.
+  `a_comment_delivered_after_a_later_issue_edit_still_marks_the_job`: compute
+  `let (t1, t2) = (hours_from_now(1), hours_from_now(2));` once; open issue, post an issue edit at
+  `t2`, then the same human comment body (label `&["trackers"]`) at `t1` twice. Assert `200` each
+  time, `ticket_stale`, `ticket_changed_at == t1`, description is the edit's body,
+  `remote_revision == t2`. (The redelivery assertion holds through `GREATEST` alone; the unit test
+  is what pins the `Drop` guard.)
 - [ ] Run `cargo test -p of-web --test webhooks_http a_comment_delivered_after`. Expected: fails
   (`ticket_stale` false).
 - [ ] In `crates/of-trackers/src/sync.rs`, at the top of the `if let Some(job) = existing` block,
@@ -71,4 +75,4 @@ needs no code change.
   Expected: all pass, including the existing comment, bot, terminal, JIRA and issue-edit tests.
 - [ ] Run `cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`. Expected: pass.
 - [ ] Format and commit: `cargo fmt --all` then
-  `git commit -m "of-trackers: guard comment webhooks by ticket_changed_at"`.
+  `git commit -m "fix(of-trackers): guard comment webhooks by ticket_changed_at"`.
