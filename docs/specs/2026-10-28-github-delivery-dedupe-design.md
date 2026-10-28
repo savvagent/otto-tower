@@ -1,10 +1,13 @@
 # GitHub webhook delivery dedupe design
 
-> **Status:** DRAFT — record every verified GitHub tracker-webhook event in a new tenant table,
-> keyed by the SHA-256 of its signed body, in the same transaction as its effects, and acknowledge a
-> repeat with `200` before `inbound_decision` runs. A body whose shape does not match its unsigned
-> `X-GitHub-Event` is rejected before it is recorded.
-> Swept after 30 days. Closes savvagent/otto-factory#265.
+> **Status:** IMPLEMENTED — shipped in PR #268 (squash bb7c0b3). Records every verified GitHub
+> tracker-webhook event in a new tenant table, keyed by the SHA-256 of its signed body, in the same
+> transaction as its effects, and acknowledges a repeat with `200` before `inbound_decision` runs.
+> A body whose shape does not match its unsigned `X-GitHub-Event` is rejected before it is recorded.
+> Swept after 30 days. Closes savvagent/otto-factory#265. Deferred review findings: the replay past
+> the retention window and installation moves are in savvagent/otto-factory#271; the pinned-only
+> insert policy, a positive event-shape check, JIRA replay and the repeat-branch log are in
+> savvagent/otto-factory#273.
 >
 > **Follows:** `docs/specs/2026-10-28-late-comment-stale-mark-design.md` (PR #263), whose security
 > review found the gap (#259).
