@@ -177,7 +177,12 @@ async fn a_labelled_issue_webhook_creates_one_job_and_a_stale_redelivery_does_no
     .unwrap();
     tx.commit().await.unwrap();
 
-    for _ in 0..2 {
+    // The delivery record is forgotten before the redelivery, as it is after the
+    // retention window, so it is the job's revision guard that drops it.
+    for i in 0..2 {
+        if i == 1 {
+            forget_deliveries(&h).await;
+        }
         let reply = post_webhook(
             &h,
             "/webhooks/github",
@@ -399,8 +404,13 @@ async fn an_inbound_close_of_a_claimed_job_bills_it_exactly_once(pool: PgPool) {
     let job = open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
     claim(&h, org, &job, UserId::new()).await;
 
-    // The redelivery is dropped as stale, so the close records once.
-    for _ in 0..2 {
+    // The redelivery is dropped by the delivery dedupe; with its record
+    // forgotten (as after the retention window) it is dropped as stale. Either
+    // way the close records once.
+    for i in 0..3 {
+        if i == 2 {
+            forget_deliveries(&h).await;
+        }
         close_issue(&h, INSTALLATION, "acme/api", 17, "completed").await;
     }
 
@@ -583,7 +593,10 @@ async fn an_inbound_close_of_a_never_claimed_job_completes_it_unbilled(pool: PgP
     bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
     open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
 
-    for _ in 0..2 {
+    for i in 0..2 {
+        if i == 1 {
+            forget_deliveries(&h).await;
+        }
         close_issue(&h, INSTALLATION, "acme/api", 17, "completed").await;
     }
 
@@ -960,7 +973,12 @@ async fn a_human_comment_marks_the_issues_job_stale(pool: PgPool) {
 
     let at = after_now();
     let comment = github_comment(INSTALLATION, "acme/api", 17, &["trackers"], false, &at);
-    for _ in 0..2 {
+    // The redelivery's record is forgotten first (as after the retention
+    // window), so it is `inbound_decision`'s own guard that drops it.
+    for i in 0..2 {
+        if i == 1 {
+            forget_deliveries(&h).await;
+        }
         assert_eq!(
             post_github_comment(&h, &comment).await.status(),
             StatusCode::OK
@@ -1111,7 +1129,12 @@ async fn a_comment_delivered_after_a_later_issue_edit_still_marks_the_job(pool: 
     let edit = github_issue_edit(INSTALLATION, "acme/api", 17, "edited at t2", &t2);
     assert_eq!(post_github_issue(&h, &edit).await.status(), StatusCode::OK);
     let comment = github_comment(INSTALLATION, "acme/api", 17, &["trackers"], false, &t1);
-    for _ in 0..2 {
+    // The redelivery's record is forgotten first (as after the retention
+    // window), so it is `inbound_decision`'s own guard that drops it.
+    for i in 0..2 {
+        if i == 1 {
+            forget_deliveries(&h).await;
+        }
         assert_eq!(
             post_github_comment(&h, &comment).await.status(),
             StatusCode::OK
@@ -1204,4 +1227,229 @@ async fn a_comment_on_an_issue_with_no_job_creates_none(pool: PgPool) {
         .unwrap();
     tx.commit().await.unwrap();
     assert!(job.is_none());
+}
+
+/// A GitHub comment event like [`post_github_comment`]'s, sent with an
+/// `X-GitHub-Delivery` id.
+async fn post_github_comment_as(h: &Harness, body: &[u8], delivery: &str) -> http::Response<Body> {
+    post_webhook(
+        h,
+        "/webhooks/github",
+        body,
+        &[
+            ("x-github-event", "issue_comment"),
+            ("x-github-delivery", delivery),
+            (
+                "x-hub-signature-256",
+                &format!("sha256={}", github_signature(body)),
+            ),
+        ],
+    )
+    .await
+}
+
+/// Forget every recorded webhook delivery, as the sweep does after the retention
+/// window, so a redelivery reaches the job's own guards.
+async fn forget_deliveries(h: &Harness) {
+    sqlx::query("DELETE FROM tracker_deliveries")
+        .execute(h.db.pool())
+        .await
+        .unwrap();
+}
+
+/// How many deliveries `org` has recorded.
+async fn deliveries_recorded(h: &Harness, org: OrgId) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM tracker_deliveries WHERE org_id = $1")
+        .bind(org)
+        .fetch_one(h.db.pool())
+        .await
+        .unwrap()
+}
+
+/// Clear a job's `ticket_changed_at`, the state a relink can leave it in, so
+/// that `inbound_decision`'s own guard would let a repeated comment through and
+/// only the delivery dedupe can be what drops it.
+async fn forget_ticket_change(h: &Harness, org: OrgId, job: &of_core::jobs::Job) {
+    let mut tx = h.db.begin(org).await.unwrap();
+    sqlx::query("UPDATE jobs SET ticket_changed_at = NULL WHERE org_id = $1 AND id = $2")
+        .bind(org)
+        .bind(&job.id)
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// GitHub's own redelivery reuses both the id and the body: it is acknowledged
+/// and does nothing. The id is unsigned, so it is never a key on its own: a
+/// different body carrying a seen id is a new delivery and applies.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_repeated_delivery_is_acknowledged_without_effect_but_a_reused_id_is_not_a_key(
+    pool: PgPool,
+) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    let job = open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+
+    let first = github_comment(
+        INSTALLATION,
+        "acme/api",
+        17,
+        &["trackers"],
+        false,
+        &after_now(),
+    );
+    let reply = post_github_comment_as(&h, &first, "delivery-x").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert!(job_for(&h, org, "acme/api", 17).await.ticket_stale);
+
+    forget_ticket_change(&h, org, &job).await;
+    let reply = post_github_comment_as(&h, &first, "delivery-x").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert_eq!(body_json(reply).await["ok"], serde_json::Value::Bool(true));
+    assert_eq!(
+        job_for(&h, org, "acme/api", 17).await.ticket_changed_at,
+        None,
+        "GitHub's redelivery applied again"
+    );
+
+    let later = hours_from_now(2);
+    let other = github_comment(INSTALLATION, "acme/api", 17, &["trackers"], false, &later);
+    let reply = post_github_comment_as(&h, &other, "delivery-x").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert_eq!(
+        job_for(&h, org, "acme/api", 17)
+            .await
+            .ticket_changed_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        Some(later),
+        "an unsigned delivery id suppressed a different signed body"
+    );
+}
+
+/// A replay: the captured body and signature sent again under a fresh delivery
+/// id (the header is not signed). The body digest makes it a repeat.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_replayed_body_under_a_new_delivery_id_is_acknowledged_without_effect(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    let job = open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+
+    let comment = github_comment(
+        INSTALLATION,
+        "acme/api",
+        17,
+        &["trackers"],
+        false,
+        &after_now(),
+    );
+    let reply = post_github_comment_as(&h, &comment, "delivery-1").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert!(job_for(&h, org, "acme/api", 17).await.ticket_stale);
+
+    forget_ticket_change(&h, org, &job).await;
+    for replay in [Some("delivery-2"), None] {
+        let reply = match replay {
+            Some(id) => post_github_comment_as(&h, &comment, id).await,
+            None => post_github_comment(&h, &comment).await,
+        };
+        assert_eq!(reply.status(), StatusCode::OK);
+        let after = job_for(&h, org, "acme/api", 17).await;
+        assert_eq!(after.ticket_changed_at, None, "a replayed body applied");
+    }
+
+    // Control: a different body under a fresh id applies.
+    let later = hours_from_now(2);
+    let other = github_comment(INSTALLATION, "acme/api", 17, &["trackers"], false, &later);
+    let reply = post_github_comment_as(&h, &other, "delivery-3").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert_eq!(
+        job_for(&h, org, "acme/api", 17)
+            .await
+            .ticket_changed_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        Some(later)
+    );
+}
+
+/// `X-GitHub-Event` is not signed. A comment's signed body sent first under
+/// `issues` is rejected (its shape does not match the event) and recorded
+/// nowhere, so it cannot use up the genuine `issue_comment` delivery, which
+/// still marks the job.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_body_sent_under_the_wrong_event_is_rejected_and_does_not_pre_empt_the_genuine_delivery(
+    pool: PgPool,
+) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+    let recorded = deliveries_recorded(&h, org).await;
+
+    let comment = github_comment(
+        INSTALLATION,
+        "acme/api",
+        17,
+        &["trackers"],
+        false,
+        &after_now(),
+    );
+    let mislabelled = post_github_issue(&h, &comment).await;
+    assert_eq!(mislabelled.status(), StatusCode::NOT_FOUND);
+    assert!(!job_for(&h, org, "acme/api", 17).await.ticket_stale);
+    assert_eq!(deliveries_recorded(&h, org).await, recorded);
+
+    let genuine = post_github_comment_as(&h, &comment, "delivery-1").await;
+    assert_eq!(genuine.status(), StatusCode::OK);
+    assert!(
+        job_for(&h, org, "acme/api", 17).await.ticket_stale,
+        "the genuine comment delivery was dropped as a repeat"
+    );
+}
+
+/// A close of a claimed job is applied in a second pass, after its first
+/// pass's transaction (and the delivery record in it) was dropped for the
+/// standing lookup. The second pass records the delivery again, so the close
+/// is remembered like any other event.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_billed_close_records_its_delivery_in_the_second_pass(pool: PgPool) {
+    let h = harness(pool.clone()).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    let job = open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+    claim(&h, org, &job, UserId::new()).await;
+    assert_eq!(deliveries_recorded(&h, org).await, 1, "the open");
+
+    close_issue(&h, INSTALLATION, "acme/api", 17, "completed").await;
+    assert_eq!(completion_rows(&pool).await, vec![billed_close()]);
+    assert_eq!(
+        deliveries_recorded(&h, org).await,
+        2,
+        "the billed close was not recorded"
+    );
+}
+
+/// GitHub never sends a malformed delivery id; one is rejected with the same
+/// uniform `404` as any other rejected webhook, and has no effect.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_malformed_delivery_id_is_rejected(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+
+    let comment = github_comment(
+        INSTALLATION,
+        "acme/api",
+        17,
+        &["trackers"],
+        false,
+        &after_now(),
+    );
+    let too_long = "x".repeat(129);
+    let reply = post_github_comment_as(&h, &comment, &too_long).await;
+    assert_eq!(reply.status(), StatusCode::NOT_FOUND);
+    assert!(!job_for(&h, org, "acme/api", 17).await.ticket_stale);
 }

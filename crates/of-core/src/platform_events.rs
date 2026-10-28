@@ -249,6 +249,7 @@ async fn org_deleted(db: &Db, event: &WebhookEvent, org: OrgId) -> Result<Outcom
         "org_counters",
         "usage_outbox",
         "console_sessions",
+        "tracker_deliveries",
     ] {
         let n = sqlx::query(&format!("DELETE FROM {table} WHERE org_id = $1"))
             .bind(org)

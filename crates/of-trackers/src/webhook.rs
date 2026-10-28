@@ -20,6 +20,11 @@ type HmacSha256 = Hmac<Sha256>;
 
 const GITHUB_SIGNATURE_HEADER: &str = "x-hub-signature-256";
 const GITHUB_EVENT_HEADER: &str = "x-github-event";
+const GITHUB_DELIVERY_HEADER: &str = "x-github-delivery";
+/// GitHub sends a 36-character GUID; this is generous headroom. Visible ASCII
+/// is one character per byte, so it is also the bound the
+/// `tracker_deliveries.delivery_id` column checks (in characters).
+const MAX_DELIVERY_ID_LEN: usize = 128;
 pub const JIRA_WEBHOOK_SECRET_HEADER: &str = "x-of-webhook-secret";
 
 #[derive(Debug, Clone)]
@@ -193,6 +198,20 @@ fn parse_github(headers: &HeaderMap, raw_body: &[u8]) -> Result<ParsedWebhook> {
     match event {
         "issues" => {
             let payload: GithubIssuePayload = parse_json(raw_body, "GitHub")?;
+            // `X-GitHub-Event` is not signed, and an `issue_comment` body
+            // carries everything an `issues` payload needs, so without this a
+            // signed comment body could be replayed as an issue event. The
+            // reverse needs no check: an `issues` body has no `comment`, which
+            // `issue_comment` requires. Each signed body therefore parses under
+            // exactly one event, which is what lets the dedupe key
+            // ([`github_delivery`]) leave the unsigned event name out.
+            if payload.comment.is_some() {
+                return Err(Error::InvalidWebhook(
+                    "GitHub issues payload carried a comment object; its X-GitHub-Event \
+                     header does not match its body"
+                        .into(),
+                ));
+            }
             Ok(ParsedWebhook::Event(Box::new(WebhookEvent {
                 provider: Provider::Github,
                 connection_external_id: payload.installation.id.to_string(),
@@ -292,6 +311,60 @@ fn parse_jira(raw_body: &[u8], site_id: String) -> Result<ParsedWebhook> {
     })))
 }
 
+/// What identifies a verified GitHub event for dedupe
+/// (`of_core::tracker_deliveries`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubDelivery {
+    /// `X-GitHub-Delivery`, if sent. Recorded for diagnosis only, never a
+    /// dedupe key: it is not covered by the signature, so as a key it would let
+    /// an unsigned value mark a genuine delivery as already seen. GitHub's own
+    /// redelivery resends the same body, which the digest already catches.
+    pub id: Option<String>,
+    /// SHA-256 of the signed body, the dedupe key. The signature binds the
+    /// body, so a replay must send the same bytes, whatever headers come with
+    /// them. The unsigned `X-GitHub-Event` is deliberately left out: a body
+    /// whose shape does not match its event is rejected by
+    /// [`verify_and_parse`] before it is recorded, so a signed body is applied
+    /// under one event only, and at most once.
+    pub digest: [u8; 32],
+}
+
+/// The dedupe key of a GitHub delivery whose signature already verified.
+///
+/// A malformed `X-GitHub-Delivery` is an error.
+pub fn github_delivery(headers: &HeaderMap, raw_body: &[u8]) -> Result<GithubDelivery> {
+    Ok(GithubDelivery {
+        id: github_delivery_id(headers)?,
+        digest: Sha256::digest(raw_body).into(),
+    })
+}
+
+/// GitHub's `X-GitHub-Delivery` id for a request, if it sent one.
+///
+/// Absent is `Ok(None)`. Present but empty, longer than
+/// [`MAX_DELIVERY_ID_LEN`] bytes, or anything other than visible ASCII is an
+/// error, not "absent": GitHub never sends such a value, so it is a malformed
+/// request, rejected like any other.
+fn github_delivery_id(headers: &HeaderMap) -> Result<Option<String>> {
+    let Some(value) = headers.get(GITHUB_DELIVERY_HEADER) else {
+        return Ok(None);
+    };
+    let bytes = value.as_bytes();
+    let malformed = || {
+        Error::InvalidWebhook(format!(
+            "webhook header {GITHUB_DELIVERY_HEADER} must be 1 to {MAX_DELIVERY_ID_LEN} visible \
+             ASCII characters"
+        ))
+    };
+    if bytes.is_empty()
+        || bytes.len() > MAX_DELIVERY_ID_LEN
+        || !bytes.iter().all(u8::is_ascii_graphic)
+    {
+        return Err(malformed());
+    }
+    Ok(Some(value.to_str().map_err(|_| malformed())?.to_owned()))
+}
+
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
     headers
         .get(name)
@@ -349,6 +422,8 @@ struct GithubIssuePayload {
     installation: GithubInstallation,
     repository: GithubRepository,
     issue: GithubIssue,
+    /// Never present in a genuine `issues` payload; see [`parse_github`].
+    comment: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -561,6 +636,28 @@ mod tests {
         );
     }
 
+    /// `X-GitHub-Event` is not signed: a signed body sent under the other
+    /// event is rejected rather than read as that event, in both directions.
+    #[test]
+    fn a_github_body_under_the_wrong_event_is_rejected() {
+        for (event, body) in [
+            ("issues", GITHUB_COMMENT_FIXTURE),
+            ("issue_comment", GITHUB_ISSUES_FIXTURE),
+        ] {
+            let err = verify_and_parse(
+                Provider::Github,
+                &github_headers(event, body),
+                None,
+                body,
+                Verification::Github {
+                    secret: GITHUB_SECRET,
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(err, Error::InvalidWebhook(_)), "{event}: {err}");
+        }
+    }
+
     #[test]
     fn github_issue_comment_reads_whether_the_author_is_a_bot() {
         let parse = |body: &[u8]| {
@@ -697,6 +794,94 @@ mod tests {
                 .unwrap(),
         );
         headers
+    }
+
+    fn delivery_headers(value: &[u8]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            GITHUB_DELIVERY_HEADER,
+            http::HeaderValue::from_bytes(value).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn a_missing_delivery_id_is_none() {
+        assert_eq!(github_delivery_id(&HeaderMap::new()).unwrap(), None);
+    }
+
+    #[test]
+    fn a_guid_delivery_id_is_read() {
+        let guid = "72d3162e-cc78-11e3-81ab-4c9367dc0958";
+        assert_eq!(
+            github_delivery_id(&delivery_headers(guid.as_bytes())).unwrap(),
+            Some(guid.to_string())
+        );
+        let longest = "a".repeat(MAX_DELIVERY_ID_LEN);
+        assert_eq!(
+            github_delivery_id(&delivery_headers(longest.as_bytes())).unwrap(),
+            Some(longest)
+        );
+    }
+
+    #[test]
+    fn a_malformed_delivery_id_is_rejected() {
+        for bad in [
+            b"".to_vec(),
+            "a".repeat(MAX_DELIVERY_ID_LEN + 1).into_bytes(),
+            b"has space".to_vec(),
+            "caf\u{e9}".as_bytes().to_vec(),
+            b"tab\tinside".to_vec(),
+        ] {
+            assert!(
+                matches!(
+                    github_delivery_id(&delivery_headers(&bad)),
+                    Err(Error::InvalidWebhook(_))
+                ),
+                "{bad:?} was accepted"
+            );
+        }
+    }
+
+    fn event_headers(event: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(GITHUB_EVENT_HEADER, event.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn the_delivery_digest_is_the_signed_body_alone() {
+        let body = br#"{"action":"created"}"#;
+        let comment = github_delivery(&event_headers("issue_comment"), body).unwrap();
+        assert_eq!(comment.id, None);
+        assert_eq!(comment.digest, <[u8; 32]>::from(Sha256::digest(body)));
+        assert_eq!(
+            comment.digest,
+            github_delivery(&event_headers("issues"), body)
+                .unwrap()
+                .digest,
+            "the unsigned event header must not make a replayed body a new delivery"
+        );
+        assert_ne!(
+            comment.digest,
+            github_delivery(&event_headers("issue_comment"), br#"{"action":"edited"}"#)
+                .unwrap()
+                .digest
+        );
+        let mut with_id = event_headers("issues");
+        with_id.insert(
+            GITHUB_DELIVERY_HEADER,
+            "72d3162e-cc78-11e3-81ab-4c9367dc0958".parse().unwrap(),
+        );
+        let identified = github_delivery(&with_id, body).unwrap();
+        assert_eq!(
+            identified.id.as_deref(),
+            Some("72d3162e-cc78-11e3-81ab-4c9367dc0958")
+        );
+        assert_eq!(
+            identified.digest, comment.digest,
+            "the unsigned delivery id must not change the key"
+        );
     }
 
     fn jira_headers(secret: &str) -> HeaderMap {

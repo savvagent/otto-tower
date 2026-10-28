@@ -89,10 +89,13 @@ async fn populate(db: &otto_tenant::Db, t: &common::Tenant) {
     tx.audit(otto_tenant::audit::Entry::new("repo.registered"))
         .await
         .unwrap();
+    of_core::tracker_deliveries::record(&mut tx, Provider::Github, Some("delivery-1"), &[7; 32])
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 }
 
-const TABLES: [&str; 13] = [
+const TABLES: [&str; 14] = [
     "repos",
     "repo_remotes",
     "repo_leases",
@@ -106,6 +109,7 @@ const TABLES: [&str; 13] = [
     "org_counters",
     "usage_outbox",
     "audit_events",
+    "tracker_deliveries",
 ];
 
 #[sqlx::test]

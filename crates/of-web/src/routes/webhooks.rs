@@ -10,7 +10,9 @@ use of_core::trackers::{
     find_binding_by_external_ref, get_connection, resolve_connection_org, Provider,
 };
 use of_trackers::sync::InboundDecision;
-use of_trackers::webhook::{jira_site_id, verify_and_parse, ParsedWebhook, Verification};
+use of_trackers::webhook::{
+    github_delivery, jira_site_id, verify_and_parse, GithubDelivery, ParsedWebhook, Verification,
+};
 use serde_json::json;
 
 use crate::error::{ApiError, ApiResult};
@@ -162,9 +164,38 @@ pub async fn receive(
 
     let org_id = connection.org_id;
 
+    // Within the retention window, a signed GitHub event is applied at most
+    // once per org: see `of_core::tracker_deliveries`. Read only after the
+    // signature verified, so an unsigned request never reaches it. JIRA
+    // authenticates with a shared secret, not a signature over the body: anyone
+    // holding the secret can forge any body, so a body digest would not stop a
+    // replay. Ignored events have no effect to repeat. The key is the signed
+    // body alone; `verify_and_parse` has already rejected a body whose shape
+    // does not match its unsigned `X-GitHub-Event`, so a captured body cannot
+    // be recorded under one event to shadow its genuine delivery under another.
+    //
+    // The record is made before `apply` knows whether the event matches a
+    // binding, so an event that did nothing (no binding yet, a dropped action)
+    // is still remembered: a manual redelivery of it after the repo is bound is
+    // acknowledged without effect. That is deliberate (spec, "Risks"): an event
+    // is judged once, and repeating the change on the ticket is the remedy.
+    let delivery = match (provider, &parsed) {
+        (Provider::Github, ParsedWebhook::Event(_)) => {
+            Some(github_delivery(&headers, raw_body).map_err(|error| {
+                tracing::warn!(provider = %provider, org_id = %org_id, error = %error, "webhook rejected");
+                webhook_not_found()
+            })?)
+        }
+        _ => None,
+    };
+
+    if !first_delivery(&mut tx, provider, delivery.as_ref()).await? {
+        return Ok(Json(json!({ "ok": true })));
+    }
+
     // The org's billing standing decides only whether a verified close of a
     // claimed job is billed, so it is read only then. The first pass applies
-    // everything else and, on reaching such a close, stops without writing
+    // everything else and, on reaching such a close, stops without committing
     // (`Applied::NeedsStatus`). The transaction is then dropped (a pooled
     // connection is never held across a platform call), the standing is
     // looked up, and a second pass reopens a transaction and applies the
@@ -221,11 +252,46 @@ pub async fn receive(
             );
             return Ok(Json(json!({ "ok": true })));
         }
+        // Pass 1's record went with its transaction, so it is made again here.
+        // A repeat now means a concurrent delivery of this event committed
+        // while the standing was looked up.
+        if !first_delivery(&mut tx, provider, delivery.as_ref()).await? {
+            return Ok(Json(json!({ "ok": true })));
+        }
         apply(&mut tx, provider, &fresh, &parsed, Some(&warmed)).await?;
     }
 
     tx.commit().await.map_err(ApiError::from)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Record `delivery` in `tx` before it is applied; `false` if this org already
+/// recorded it (within the retention window), and the caller acknowledges it
+/// without effect. Nothing to record (`None`) is always a first delivery. The
+/// record commits only with the delivery's effects, so a delivery that fails is
+/// not mistaken for a repeat when it is redelivered (GitHub does not retry on
+/// its own; a redelivery is manual).
+async fn first_delivery(
+    tx: &mut otto_tenant::Tx<'_>,
+    provider: Provider,
+    delivery: Option<&GithubDelivery>,
+) -> ApiResult<bool> {
+    let Some(delivery) = delivery else {
+        return Ok(true);
+    };
+    let first =
+        of_core::tracker_deliveries::record(tx, provider, delivery.id.as_deref(), &delivery.digest)
+            .await
+            .map_err(ApiError::from)?;
+    if !first {
+        tracing::info!(
+            provider = %provider,
+            org_id = %tx.org(),
+            delivery_id = delivery.id.as_deref().unwrap_or("-"),
+            "repeated webhook delivery; acknowledged without effect"
+        );
+    }
+    Ok(first)
 }
 
 /// How far [`apply`] got.
@@ -342,7 +408,9 @@ async fn apply(
                                     // comment's time would make the echo check
                                     // drop an earlier `issues` edit that GitHub
                                     // delivers after the comment, losing that
-                                    // edit. A redelivered comment is dropped by
+                                    // edit. A redelivered comment is dropped
+                                    // before this by `first_delivery`, and
+                                    // after the dedupe window by
                                     // `inbound_decision`'s own guard (its time
                                     // against `ticket_changed_at`), and two
                                     // deliveries racing past it are still
