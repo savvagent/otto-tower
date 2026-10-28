@@ -6576,6 +6576,7 @@ async fn sync_ticket_turns_a_blocked_by_line_into_a_dependency(pool: PgPool) {
             { "ticketRef": "acme/api#14", "outcome": "added", "jobs": [blocker] }
         ])
     );
+    assert_eq!(out["blockersImported"], true, "{out}");
     assert_eq!(env.blocked_ids(&caller).await, vec![me.clone()]);
     assert!(gh.comments().is_empty(), "a pending job posts nothing");
 
@@ -6790,6 +6791,7 @@ async fn a_trackers_only_token_records_drift_but_adds_no_dependency(pool: PgPool
     let out = env.sync(&trackers_only, &me).await.unwrap();
 
     assert_eq!(out["blockers"], serde_json::json!([]), "{out}");
+    assert_eq!(out["blockersImported"], false, "{out}");
     assert_eq!(out["job"]["ticketStale"], true, "{out}");
     assert!(env.blocked_ids(&caller).await.is_empty());
 }

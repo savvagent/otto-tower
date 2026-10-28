@@ -584,13 +584,15 @@ impl Factory {
         let app_id = self
             .tracker_sync()
             .github_app_id
-            .ok_or_else(|| "GitHub tracker sync is not configured (missing App id)".to_string())?;
+            .ok_or_else(|| "GitHub tracker sync is not configured on this server (missing App id); an operator has to \
+                 configure the GitHub App, and retrying will not help".to_string())?;
         let private_key = self
             .tracker_sync()
             .github_app_private_key
             .clone()
             .ok_or_else(|| {
-                "GitHub tracker sync is not configured (missing App private key)".to_string()
+                "GitHub tracker sync is not configured on this server (missing App private key); an \
+                 operator has to configure the GitHub App, and retrying will not help".to_string()
             })?;
         let client =
             GithubAppClient::new(app_id, private_key).map_err(|error| error.to_string())?;
@@ -1619,7 +1621,8 @@ impl Factory {
                        set_dependencies), or cycle (that job is this one or already waits on \
                        it; nothing changed). Nothing is ever removed. Adding dependencies needs \
                        jobs:write as well as trackers; without it the issue is still read and \
-                       drift recorded, but no dependency is added and blockers is empty. The \
+                       drift recorded, but no dependency is added, blockers is empty and \
+                       blockersImported is false (it is also false for a JIRA job). The \
                        \"Blocked by\" lines come from the issue body, which anyone who can edit \
                        the issue controls: they can only make this job wait on a job you can \
                        see, never remove one, and set_dependencies undoes an unwanted one. The \
@@ -1689,6 +1692,7 @@ impl Factory {
         };
 
         let mut blockers = Vec::new();
+        let mut blockers_imported = false;
         let mut github = None;
         if tracker == Tracker::Github {
             // A malformed ticket_ref (anything not "owner/repo#N" in the
@@ -1727,6 +1731,7 @@ impl Factory {
             // not grant. Without `jobs:write` the issue is still read and
             // drift recorded (that is tracker state, not a dependency).
             let import_blockers = caller.has_scope(scope::JOBS_WRITE);
+            blockers_imported = import_blockers;
             blockers = self
                 .record_issue_signals(&caller, &team, &job, &issue, owner, repo, import_blockers)
                 .await?;
@@ -1735,7 +1740,11 @@ impl Factory {
                 // is the whole call.
                 let tx = self.tx(&caller).await?;
                 let job = self.finish_sync_ticket(tx, &caller, &team, &job.id).await?;
-                return Ok(Json(out::SyncTicketOut { job, blockers }));
+                return Ok(Json(out::SyncTicketOut {
+                    job,
+                    blockers,
+                    blockers_imported,
+                }));
             }
             github = Some(client);
         }
@@ -1869,6 +1878,10 @@ impl Factory {
         // loop-safety state that must land whoever may see the job now. What
         // is decided again is what the caller gets back. A job whose repo moved
         // out of their teams mid-call is `job_not_found`, not returned.
-        Ok(Json(out::SyncTicketOut { job, blockers }))
+        Ok(Json(out::SyncTicketOut {
+            job,
+            blockers,
+            blockers_imported,
+        }))
     }
 }

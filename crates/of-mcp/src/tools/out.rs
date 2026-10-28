@@ -50,6 +50,10 @@ pub struct SyncTicketOut {
     /// One entry per issue named on a "Blocked by" line of the GitHub issue's
     /// body, in order. Empty for a JIRA job, or an issue with no such line.
     pub blockers: Vec<BlockerOutcome>,
+    /// Whether "Blocked by" lines were read into dependencies at all. False
+    /// for a JIRA job, and for a token without `jobs:write`; then an empty
+    /// `blockers` says nothing about what the issue's body contains.
+    pub blockers_imported: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
