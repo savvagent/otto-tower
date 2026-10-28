@@ -1167,3 +1167,137 @@ async fn a_comment_on_an_issue_with_no_job_creates_none(pool: PgPool) {
     tx.commit().await.unwrap();
     assert!(job.is_none());
 }
+
+/// A GitHub comment event like [`post_github_comment`]'s, sent with an
+/// `X-GitHub-Delivery` id.
+async fn post_github_comment_as(h: &Harness, body: &[u8], delivery: &str) -> http::Response<Body> {
+    post_webhook(
+        h,
+        "/webhooks/github",
+        body,
+        &[
+            ("x-github-event", "issue_comment"),
+            ("x-github-delivery", delivery),
+            (
+                "x-hub-signature-256",
+                &format!("sha256={}", github_signature(body)),
+            ),
+        ],
+    )
+    .await
+}
+
+/// Clear a job's `ticket_changed_at`, the state a relink can leave it in, so
+/// that `inbound_decision`'s own guard would let a repeated comment through and
+/// only the delivery dedupe can be what drops it.
+async fn forget_ticket_change(h: &Harness, org: OrgId, job: &of_core::jobs::Job) {
+    let mut tx = h.db.begin(org).await.unwrap();
+    sqlx::query("UPDATE jobs SET ticket_changed_at = NULL WHERE org_id = $1 AND id = $2")
+        .bind(org)
+        .bind(&job.id)
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// A delivery id already applied is acknowledged and does nothing, even when the
+/// body it carries differs (GitHub's own redelivery reuses the id).
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_repeated_delivery_id_is_acknowledged_without_effect(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    let job = open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+
+    let first = github_comment(
+        INSTALLATION,
+        "acme/api",
+        17,
+        &["trackers"],
+        false,
+        &after_now(),
+    );
+    let reply = post_github_comment_as(&h, &first, "delivery-x").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert!(job_for(&h, org, "acme/api", 17).await.ticket_stale);
+
+    forget_ticket_change(&h, org, &job).await;
+    let other = github_comment(
+        INSTALLATION,
+        "acme/api",
+        17,
+        &["trackers"],
+        false,
+        &hours_from_now(2),
+    );
+    let reply = post_github_comment_as(&h, &other, "delivery-x").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert_eq!(body_json(reply).await["ok"], serde_json::Value::Bool(true));
+    let after = job_for(&h, org, "acme/api", 17).await;
+    assert_eq!(
+        after.ticket_changed_at, None,
+        "a repeated delivery id applied"
+    );
+
+    // Control: the same event under a delivery id not seen before applies.
+    let reply = post_github_comment_as(&h, &other, "delivery-y").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert!(job_for(&h, org, "acme/api", 17).await.ticket_stale);
+}
+
+/// A replay: the captured body and signature sent again under a fresh delivery
+/// id (the header is not signed). The body digest makes it a repeat.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_replayed_body_under_a_new_delivery_id_is_acknowledged_without_effect(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    let job = open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+
+    let comment = github_comment(
+        INSTALLATION,
+        "acme/api",
+        17,
+        &["trackers"],
+        false,
+        &after_now(),
+    );
+    let reply = post_github_comment_as(&h, &comment, "delivery-1").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert!(job_for(&h, org, "acme/api", 17).await.ticket_stale);
+
+    forget_ticket_change(&h, org, &job).await;
+    for replay in [Some("delivery-2"), None] {
+        let reply = match replay {
+            Some(id) => post_github_comment_as(&h, &comment, id).await,
+            None => post_github_comment(&h, &comment).await,
+        };
+        assert_eq!(reply.status(), StatusCode::OK);
+        let after = job_for(&h, org, "acme/api", 17).await;
+        assert_eq!(after.ticket_changed_at, None, "a replayed body applied");
+    }
+}
+
+/// GitHub never sends a malformed delivery id; one is rejected with the same
+/// uniform `404` as any other rejected webhook, and has no effect.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_malformed_delivery_id_is_rejected(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+
+    let comment = github_comment(
+        INSTALLATION,
+        "acme/api",
+        17,
+        &["trackers"],
+        false,
+        &after_now(),
+    );
+    let too_long = "x".repeat(129);
+    let reply = post_github_comment_as(&h, &comment, &too_long).await;
+    assert_eq!(reply.status(), StatusCode::NOT_FOUND);
+    assert!(!job_for(&h, org, "acme/api", 17).await.ticket_stale);
+}

@@ -10,8 +10,11 @@ use of_core::trackers::{
     find_binding_by_external_ref, get_connection, resolve_connection_org, Provider,
 };
 use of_trackers::sync::InboundDecision;
-use of_trackers::webhook::{jira_site_id, verify_and_parse, ParsedWebhook, Verification};
+use of_trackers::webhook::{
+    github_delivery_id, jira_site_id, verify_and_parse, ParsedWebhook, Verification,
+};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -162,6 +165,27 @@ pub async fn receive(
 
     let org_id = connection.org_id;
 
+    // A signed GitHub event is applied at most once per org: see
+    // `of_core::tracker_deliveries`. Read only after the signature verified, so
+    // an unsigned request never reaches it. JIRA authenticates with a shared
+    // secret rather than a signature over the body, so replaying it is not a
+    // threat this addresses; ignored events have no effect to repeat.
+    let delivery = match (provider, &parsed) {
+        (Provider::Github, ParsedWebhook::Event(_)) => {
+            let id = github_delivery_id(&headers).map_err(|error| {
+                tracing::warn!(provider = %provider, org_id = %org_id, error = %error, "webhook rejected");
+                webhook_not_found()
+            })?;
+            let digest: [u8; 32] = Sha256::digest(raw_body).into();
+            Some(Delivery { id, digest })
+        }
+        _ => None,
+    };
+
+    if !first_delivery(&mut tx, provider, delivery.as_ref(), org_id).await? {
+        return Ok(Json(json!({ "ok": true })));
+    }
+
     // The org's billing standing decides only whether a verified close of a
     // claimed job is billed, so it is read only then. The first pass applies
     // everything else and, on reaching such a close, stops without writing
@@ -221,11 +245,53 @@ pub async fn receive(
             );
             return Ok(Json(json!({ "ok": true })));
         }
+        // Pass 1's record went with its transaction, so it is made again here.
+        // A repeat now means a concurrent delivery of this event committed
+        // while the standing was looked up.
+        if !first_delivery(&mut tx, provider, delivery.as_ref(), org_id).await? {
+            return Ok(Json(json!({ "ok": true })));
+        }
         apply(&mut tx, provider, &fresh, &parsed, Some(&warmed)).await?;
     }
 
     tx.commit().await.map_err(ApiError::from)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// What identifies a GitHub delivery for dedupe: its (unsigned) delivery id,
+/// if sent, and the SHA-256 of its signed body.
+struct Delivery {
+    id: Option<String>,
+    digest: [u8; 32],
+}
+
+/// Record `delivery` in `tx` before it is applied; `false` if this org already
+/// applied it, and the caller acknowledges it without effect. Nothing to record
+/// (`None`) is always a first delivery. The record commits only with the
+/// delivery's effects, so a failed delivery is not mistaken for a repeat when
+/// GitHub retries it.
+async fn first_delivery(
+    tx: &mut otto_tenant::Tx<'_>,
+    provider: Provider,
+    delivery: Option<&Delivery>,
+    org_id: otto_tenant::ids::OrgId,
+) -> ApiResult<bool> {
+    let Some(delivery) = delivery else {
+        return Ok(true);
+    };
+    let first =
+        of_core::tracker_deliveries::record(tx, provider, delivery.id.as_deref(), &delivery.digest)
+            .await
+            .map_err(ApiError::from)?;
+    if !first {
+        tracing::info!(
+            provider = %provider,
+            org_id = %org_id,
+            delivery_id = delivery.id.as_deref().unwrap_or("-"),
+            "repeated webhook delivery; acknowledged without effect"
+        );
+    }
+    Ok(first)
 }
 
 /// How far [`apply`] got.
@@ -342,7 +408,9 @@ async fn apply(
                                     // comment's time would make the echo check
                                     // drop an earlier `issues` edit that GitHub
                                     // delivers after the comment, losing that
-                                    // edit. A redelivered comment is dropped by
+                                    // edit. A redelivered comment is dropped
+                                    // before this by `first_delivery`, and
+                                    // after the dedupe window by
                                     // `inbound_decision`'s own guard (its time
                                     // against `ticket_changed_at`), and two
                                     // deliveries racing past it are still

@@ -120,8 +120,8 @@ async fn main() -> Result<()> {
         shipper_status.clone(),
     ));
 
-    // Hourly housekeeping: forget old platform-event dedupe markers (30 days)
-    // and expired removed-member tombstones.
+    // Hourly housekeeping: forget old platform-event and tracker-delivery dedupe
+    // markers (30 days each) and expired removed-member tombstones.
     let sweeper = tokio::spawn(sweep_loop(db.clone(), stop_shipper.subscribe()));
 
     let app = router_with_shipper(db, watcher.clone(), platform, &config, shipper_status)?;
@@ -168,13 +168,26 @@ async fn main() -> Result<()> {
 /// How long platform-event dedupe markers are kept.
 const PLATFORM_EVENT_RETENTION_DAYS: i32 = 30;
 
-/// Run [`of_core::platform_events::sweep`] hourly until shutdown.
+/// How long tracker webhook deliveries are remembered as applied. A signed
+/// GitHub delivery replayed after this is applied again, guarded only by the
+/// job's own revision and `ticket_changed_at` checks; GitHub itself redelivers
+/// only within 3 days.
+const TRACKER_DELIVERY_RETENTION_DAYS: i32 = 30;
+
+/// Run [`of_core::platform_events::sweep`] and
+/// [`of_core::tracker_deliveries::sweep`] hourly until shutdown. Each runs
+/// whether or not the other failed.
 async fn sweep_loop(db: Db, mut shutdown: tokio::sync::watch::Receiver<bool>) {
     loop {
         match of_core::platform_events::sweep(&db, PLATFORM_EVENT_RETENTION_DAYS).await {
             Ok(0) => {}
             Ok(n) => tracing::info!(rows = n, "swept old platform-event records"),
             Err(e) => tracing::warn!(error = %e, "platform-event sweep failed"),
+        }
+        match of_core::tracker_deliveries::sweep(&db, TRACKER_DELIVERY_RETENTION_DAYS).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(rows = n, "swept old tracker-delivery records"),
+            Err(e) => tracing::warn!(error = %e, "tracker-delivery sweep failed"),
         }
         tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {}

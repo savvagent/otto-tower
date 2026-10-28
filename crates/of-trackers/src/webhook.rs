@@ -20,6 +20,10 @@ type HmacSha256 = Hmac<Sha256>;
 
 const GITHUB_SIGNATURE_HEADER: &str = "x-hub-signature-256";
 const GITHUB_EVENT_HEADER: &str = "x-github-event";
+const GITHUB_DELIVERY_HEADER: &str = "x-github-delivery";
+/// GitHub sends a 36-character GUID; this is generous headroom, and the same
+/// bound the `tracker_deliveries.delivery_id` column checks.
+const MAX_DELIVERY_ID_LEN: usize = 128;
 pub const JIRA_WEBHOOK_SECRET_HEADER: &str = "x-of-webhook-secret";
 
 #[derive(Debug, Clone)]
@@ -290,6 +294,32 @@ fn parse_jira(raw_body: &[u8], site_id: String) -> Result<ParsedWebhook> {
             }),
         },
     })))
+}
+
+/// GitHub's `X-GitHub-Delivery` id for a request, if it sent one.
+///
+/// The header is **not** covered by the signature, so it is only a dedupe key
+/// for GitHub's own redeliveries (which reuse it); the body digest is what stops
+/// a replay (`of_core::tracker_deliveries`). Absent is `Ok(None)`. Present but
+/// empty, longer than 128 bytes, or anything other than visible ASCII is an
+/// error, not "absent": GitHub never sends such a value, so it is a malformed
+/// request, rejected like any other.
+pub fn github_delivery_id(headers: &HeaderMap) -> Result<Option<String>> {
+    let Some(value) = headers.get(GITHUB_DELIVERY_HEADER) else {
+        return Ok(None);
+    };
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > MAX_DELIVERY_ID_LEN
+        || !bytes.iter().all(u8::is_ascii_graphic)
+    {
+        return Err(Error::InvalidWebhook(format!(
+            "webhook header {GITHUB_DELIVERY_HEADER} must be 1 to {MAX_DELIVERY_ID_LEN} visible \
+             ASCII characters"
+        )));
+    }
+    // Visible ASCII is valid UTF-8.
+    Ok(Some(String::from_utf8_lossy(bytes).into_owned()))
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
@@ -697,6 +727,53 @@ mod tests {
                 .unwrap(),
         );
         headers
+    }
+
+    fn delivery_headers(value: &[u8]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            GITHUB_DELIVERY_HEADER,
+            http::HeaderValue::from_bytes(value).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn a_missing_delivery_id_is_none() {
+        assert_eq!(github_delivery_id(&HeaderMap::new()).unwrap(), None);
+    }
+
+    #[test]
+    fn a_guid_delivery_id_is_read() {
+        let guid = "72d3162e-cc78-11e3-81ab-4c9367dc0958";
+        assert_eq!(
+            github_delivery_id(&delivery_headers(guid.as_bytes())).unwrap(),
+            Some(guid.to_string())
+        );
+        let longest = "a".repeat(MAX_DELIVERY_ID_LEN);
+        assert_eq!(
+            github_delivery_id(&delivery_headers(longest.as_bytes())).unwrap(),
+            Some(longest)
+        );
+    }
+
+    #[test]
+    fn a_malformed_delivery_id_is_rejected() {
+        for bad in [
+            b"".to_vec(),
+            "a".repeat(MAX_DELIVERY_ID_LEN + 1).into_bytes(),
+            b"has space".to_vec(),
+            "caf\u{e9}".as_bytes().to_vec(),
+            b"tab\tinside".to_vec(),
+        ] {
+            assert!(
+                matches!(
+                    github_delivery_id(&delivery_headers(&bad)),
+                    Err(Error::InvalidWebhook(_))
+                ),
+                "{bad:?} was accepted"
+            );
+        }
     }
 
     fn jira_headers(secret: &str) -> HeaderMap {
