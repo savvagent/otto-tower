@@ -10,7 +10,7 @@ implements it exactly.
 
 ## Status — 2026-10-28
 
-🚧 Implemented on `fix/late-comment-stale-mark`, in review.
+✅ Shipped in PR #263 (squash 77dc932). Review follow-ups: savvagent/otto-factory#264 (relink keeps `ticket_changed_at`), savvagent/otto-factory#265 (GitHub delivery dedupe).
 
 ## Global Constraints
 
@@ -38,41 +38,41 @@ implements it exactly.
 One task: the decision change and both test layers are one behaviour, and the webhook route
 needs no code change.
 
-## Task 1 — Guard comment webhooks by `ticket_changed_at` 🚧
+## Task 1 — Guard comment webhooks by `ticket_changed_at` ✅
 
 **Files:** the four above.
 **Interfaces:** consumes `Job::ticket_changed_at` (already on `Job`); produces no new interface.
 `InboundDecision` is unchanged.
 
-- [ ] In `crates/of-trackers/tests/sync.rs`, replace `inbound_github_echoed_comment_is_dropped`
+- [x] In `crates/of-trackers/tests/sync.rs`, replace `inbound_github_echoed_comment_is_dropped`
   with `inbound_github_comment_already_counted_is_dropped`: a job with `remote_revision`
   `2026-09-03T10:00:00Z` (older than both comments, so today's echo check passes them and the test
   fails first) and `ticket_changed_at = 2026-09-03T12:00:00Z`, set on the `Job` the `job()` helper
   returns; a human comment at `12:00:00Z` and at `11:00:00Z` → `Drop`.
-- [ ] Add `inbound_github_comment_older_than_the_stored_revision_is_changed`: job
+- [x] Add `inbound_github_comment_older_than_the_stored_revision_is_changed`: job
   `remote_revision = 2026-09-03T12:00:00Z`, comment at `12:00:00Z` (same second) and at
   `11:00:00Z`, with `ticket_changed_at` `None` and with `10:00:00Z` → `Changed { at }`.
-- [ ] Run `cargo test -p of-trackers --test sync`. Expected: both new tests fail (`Drop` returned
+- [x] Run `cargo test -p of-trackers --test sync`. Expected: both new tests fail (`Drop` returned
   for the late comment; `Changed` returned for the already-counted one).
-- [ ] In `crates/of-web/tests/webhooks_http.rs`, add
+- [x] In `crates/of-web/tests/webhooks_http.rs`, add
   `a_comment_delivered_after_a_later_issue_edit_still_marks_the_job`: compute
   `let (t1, t2) = (hours_from_now(1), hours_from_now(2));` once; open issue, post an issue edit at
   `t2`, then the same human comment body (label `&["trackers"]`) at `t1` twice. Assert `200` each
   time, `ticket_stale`, `ticket_changed_at == t1`, description is the edit's body,
   `remote_revision == t2`. (The redelivery assertion holds through `GREATEST` alone; the unit test
   is what pins the `Drop` guard.)
-- [ ] Run `cargo test -p of-web --test webhooks_http a_comment_delivered_after`. Expected: fails
+- [x] Run `cargo test -p of-web --test webhooks_http a_comment_delivered_after`. Expected: fails
   (`ticket_stale` false).
-- [ ] In `crates/of-trackers/src/sync.rs`, at the top of the `if let Some(job) = existing` block,
+- [x] In `crates/of-trackers/src/sync.rs`, at the top of the `if let Some(job) = existing` block,
   return `github_comment_decision(event, job)` for a GitHub `IssueComment` event, before
   `is_stale_or_echoed`. Move the comment arm's body into that function, add the
   `ticket_changed_at` guard (`at <= seen` → `Drop`), and remove the now unreachable comment arm
   from the `match existing`. Keep the bot-filter comment; replace the arm's ordering comment with
   one on the new function saying why the echo check does not apply to comments (spec §1).
-- [ ] Update the `InboundDecision::Changed` doc comment if it describes the old guard, and the
+- [x] Update the `InboundDecision::Changed` doc comment if it describes the old guard, and the
   comment beside the `Changed` arm in `crates/of-web/src/routes/webhooks.rs` (spec §2).
-- [ ] Run `cargo test -p of-trackers --test sync` and `cargo test -p of-web --test webhooks_http`.
+- [x] Run `cargo test -p of-trackers --test sync` and `cargo test -p of-web --test webhooks_http`.
   Expected: all pass, including the existing comment, bot, terminal, JIRA and issue-edit tests.
-- [ ] Run `cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`. Expected: pass.
-- [ ] Format and commit: `cargo fmt --all` then
+- [x] Run `cargo test --workspace` and `cargo clippy --all-targets -- -D warnings`. Expected: pass.
+- [x] Format and commit: `cargo fmt --all` then
   `git commit -m "fix(of-trackers): guard comment webhooks by ticket_changed_at"`.

@@ -556,8 +556,9 @@ both down:
   runs before `Changed`. So a comment whose event arrives after a newer revision was stored (an
   issue edit, or otto-tower's own write-back) is dropped, and so is one in the same second
   (`<=`). This is the weaker failure, a missed hint rather than a lost edit, and the next
-  `sync_ticket` pull still catches any change after the stored revision. A guard of its own for
-  `Changed` (comparing against `ticket_changed_at`) is a possible follow-up.
+  `sync_ticket` pull still catches any change after the stored revision. Closed by
+  savvagent/otto-factory#259 (PR #263): `Changed` now has a guard of its own against
+  `ticket_changed_at`; see `docs/specs/2026-10-28-late-comment-stale-mark-design.md`.
 - **"Blocked by" lines are untrusted input.** They come from the issue body, which anyone who can
   edit the issue controls, not only the caller. What they can do is bounded: nothing happens unless
   the caller asks (`importBlockers: true`, which needs `jobs:write` on top of the `trackers` that
@@ -582,6 +583,6 @@ both down:
 
 - A guard of its own for `Changed` (comparing a late comment against `ticket_changed_at` rather
   than `remote_revision`), so a comment webhook delivered after a newer revision still marks the
-  job (see Risks).
+  job (see Risks). Done: savvagent/otto-factory#259, PR #263.
 - savvagent/otto-factory#258 (concurrent dependency writes) is fixed in this change, not a
   follow-up.
