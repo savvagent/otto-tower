@@ -119,11 +119,45 @@ pub(crate) fn ticket_match_sql(exact: usize, like: usize) -> String {
     )
 }
 
-fn segment_ok(s: &str) -> bool {
+/// Whether `s` is an acceptable `OWNER` or `REPO` segment: 1 to
+/// [`MAX_SEGMENT`] characters of `[A-Za-z0-9._-]`, and not `.` or `..`.
+///
+/// Public because the same segments end up in GitHub API paths, sent with an
+/// installation token: `..` there walks the path to an endpoint the reference
+/// never named, so the client checks against this one grammar rather than a
+/// second copy of it.
+pub fn segment_ok(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= MAX_SEGMENT
+        && s != "."
+        && s != ".."
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Split a stored full reference, `owner/repo#N`, into its parts, keeping the
+/// owner and repo as they were spelled. `None` for anything else, the short
+/// form `#N` included, since a request needs a repository to go to.
+///
+/// The rules are [`JobRef::parse`]'s, plus a positive number (GitHub has no
+/// issue 0). Stored refs are not always typed through `JobRef::parse`
+/// (`link_ticket` keeps what the caller sent), so whatever builds a request
+/// from one checks it here first.
+pub fn split_full(raw: &str) -> Option<(&str, &str, i64)> {
+    let (head, digits) = raw.trim().split_once('#')?;
+    if digits.is_empty() || digits.len() > MAX_DIGITS || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let number: i64 = digits.parse().ok()?;
+    if number <= 0 {
+        return None;
+    }
+    let (owner, repo) = head.split_once('/')?;
+    if !segment_ok(owner) || !segment_ok(repo) {
+        return None;
+    }
+    Some((owner, repo, number))
 }
 
 /// `raw` as a quoted string, cut to [`MAX_QUOTED`] characters, so a refusal
@@ -186,6 +220,9 @@ mod tests {
             "#-1",
             "a#1",
             "a/b/c#1",
+            "../x#1",
+            "a/..#1",
+            "./x#1",
             "/a#1",
             "a/#1",
             nineteen.as_str(),
@@ -219,5 +256,30 @@ mod tests {
         let full = ticket("Acme/API#0928");
         assert_eq!(full.exact(), "acme/api#928");
         assert_eq!(full.suffix_like(), None);
+    }
+
+    #[test]
+    fn split_full_keeps_the_spelling_and_refuses_what_cannot_be_a_path() {
+        assert_eq!(split_full("Acme/API#0928"), Some(("Acme", "API", 928)));
+        assert_eq!(split_full(" a.b/c_d-e#1 "), Some(("a.b", "c_d-e", 1)));
+        let nineteen = format!("a/b#{}", "1".repeat(19));
+        for raw in [
+            "a/b/c#1",
+            "../x#1",
+            "a/..#1",
+            "./x#1",
+            "a/.#1",
+            "acme/x/../../orgs/y#1",
+            "a%2F..%2Fb/c#1",
+            "a b/c#1",
+            "#1",
+            "a/b#0",
+            "a/b#-1",
+            "a/b#",
+            "a/b#1/comments",
+            nineteen.as_str(),
+        ] {
+            assert_eq!(split_full(raw), None, "{raw:?}");
+        }
     }
 }

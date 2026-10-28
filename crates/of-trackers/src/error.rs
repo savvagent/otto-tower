@@ -52,6 +52,16 @@ pub enum Error {
     )]
     GithubUserCodeRejected(String),
 
+    #[error(
+        "GitHub issue reference {owner:?}/{repo:?}#{issue_number} is not owner/repo#number \
+         with an owner and repo of [A-Za-z0-9._-]; refusing to build a request URL from it"
+    )]
+    InvalidGithubIssueRef {
+        owner: String,
+        repo: String,
+        issue_number: i64,
+    },
+
     #[error("JIRA returned a refresh token that was not valid UTF-8")]
     InvalidJiraRefreshTokenEncoding,
 

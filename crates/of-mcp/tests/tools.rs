@@ -3061,13 +3061,13 @@ async fn sync_ticket_without_a_binding_reports_not_configured(pool: PgPool) {
     assert!(e.message.contains("no active"), "{}", e.message);
 }
 
-/// A linked job whose repo has an active binding, but whose outbound call
-/// cannot go through (here: the server has no GitHub App configured at all),
-/// is reported as a distinct, retriable failure — unlike the fixed,
-/// non-retriable configuration errors above, this is exactly the case
-/// `sync_ticket`'s own description promises a caller can retry after.
+/// A linked job whose repo has an active binding, but whose server has no
+/// GitHub App configured at all, is a `tracker_sync_failed` — and not a
+/// retriable one: it fails the same way until an operator configures the App.
+/// (An outbound failure that is worth retrying is
+/// `a_failed_write_back_keeps_the_dependencies_it_followed`'s.)
 #[sqlx::test(migrations = "../of-core/migrations")]
-async fn sync_ticket_reports_an_outbound_failure_as_retriable(pool: PgPool) {
+async fn sync_ticket_reports_a_missing_github_app_as_not_retriable(pool: PgPool) {
     let (env, caller) = env(pool).await;
     let repo = env.register(&caller).await;
     let repo_id: RepoId = repo["id"].as_str().unwrap().parse().unwrap();
@@ -3126,7 +3126,8 @@ async fn sync_ticket_reports_an_outbound_failure_as_retriable(pool: PgPool) {
         .await);
 
     assert_eq!(code_of(&e), "tracker_sync_failed");
-    assert_eq!(e.data.as_ref().unwrap()["retriable"], true);
+    assert_eq!(e.data.as_ref().unwrap()["retriable"], false);
+    assert!(e.message.contains("missing App id"), "{}", e.message);
 }
 
 /// `sync_ticket` is free, so an org the platform has blocked is never refused
@@ -3206,10 +3207,10 @@ async fn sync_ticket_is_never_refused_while_the_org_is_blocked(pool: PgPool) {
         "sync_ticket is free and must reach the tracker even while blocked: {}",
         e.message
     );
-    assert_eq!(
-        e.data.as_ref().unwrap()["retriable"],
-        true,
-        "a failed outbound call is worth retrying; a block would not be"
+    assert!(
+        e.message.contains("missing App id"),
+        "the tracker step was reached, not a billing refusal: {}",
+        e.message
     );
 }
 
@@ -3278,7 +3279,6 @@ async fn sync_ticket_makes_no_status_lookup(pool: PgPool) {
         "sync_ticket is free and must reach the tracker: {}",
         e.message
     );
-    assert_eq!(e.data.as_ref().unwrap()["retriable"], true);
     assert_eq!(
         env.platform.status_calls(),
         before,
@@ -6348,11 +6348,23 @@ const INSTALLATION: &str = "777";
 
 /// A GitHub that answers what `sync_ticket` asks of it, for `acme/api` only:
 /// installation tokens, issues (body and `updated_at`, as set by a test), and
-/// comments, which it records.
+/// comments, which it records. A test can make every issue read or every
+/// comment fail with a status of its choosing, and `hits` counts every request
+/// that reached it at all.
 #[derive(Clone, Default)]
 struct MockGithub {
     issues: Arc<std::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>>,
     comments: Arc<std::sync::Mutex<Vec<(u64, String)>>>,
+    issue_status: Arc<std::sync::Mutex<Option<u16>>>,
+    comment_status: Arc<std::sync::Mutex<Option<u16>>>,
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn status_reply(code: u16) -> (http::StatusCode, axum::Json<serde_json::Value>) {
+    (
+        http::StatusCode::from_u16(code).unwrap(),
+        axum::Json(serde_json::json!({ "message": "mock failure" })),
+    )
 }
 
 impl MockGithub {
@@ -6361,8 +6373,10 @@ impl MockGithub {
         use axum::routing::{get, post};
 
         async fn token(
+            State(gh): State<MockGithub>,
             Path(_id): Path<String>,
         ) -> (http::StatusCode, axum::Json<serde_json::Value>) {
+            gh.hit();
             (
                 http::StatusCode::CREATED,
                 axum::Json(serde_json::json!({
@@ -6375,6 +6389,10 @@ impl MockGithub {
             State(gh): State<MockGithub>,
             Path((owner, repo, n)): Path<(String, String, u64)>,
         ) -> (http::StatusCode, axum::Json<serde_json::Value>) {
+            gh.hit();
+            if let Some(code) = *gh.issue_status.lock().unwrap() {
+                return status_reply(code);
+            }
             let found = (owner == "acme" && repo == "api")
                 .then(|| gh.issues.lock().unwrap().get(&n).cloned())
                 .flatten();
@@ -6391,6 +6409,10 @@ impl MockGithub {
             Path((_owner, _repo, n)): Path<(String, String, u64)>,
             axum::Json(body): axum::Json<serde_json::Value>,
         ) -> (http::StatusCode, axum::Json<serde_json::Value>) {
+            gh.hit();
+            if let Some(code) = *gh.comment_status.lock().unwrap() {
+                return status_reply(code);
+            }
             gh.comments
                 .lock()
                 .unwrap()
@@ -6424,6 +6446,22 @@ impl MockGithub {
 
     fn comments(&self) -> Vec<(u64, String)> {
         self.comments.lock().unwrap().clone()
+    }
+
+    fn hit(&self) {
+        self.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn fail_issue_reads_with(&self, code: u16) {
+        *self.issue_status.lock().unwrap() = Some(code);
+    }
+
+    fn fail_comments_with(&self, code: u16) {
+        *self.comment_status.lock().unwrap() = Some(code);
     }
 }
 
@@ -6630,17 +6668,130 @@ async fn sync_ticket_on_a_claimed_job_still_posts_and_reports_blockers(pool: PgP
     );
 }
 
-/// A failed read is the tracker's failure, and worth retrying.
+/// A 404 on the read means the App cannot see that issue, or it does not
+/// exist: the tracker's answer, and the same one on every retry.
 #[sqlx::test(migrations = "../of-core/migrations")]
-async fn sync_ticket_reports_a_failed_issue_read_as_retriable(pool: PgPool) {
+async fn sync_ticket_reports_a_missing_issue_as_not_retriable(pool: PgPool) {
     let (env, caller, _gh) = github_env(pool).await;
     // The mock knows no issue #13, so the read is a 404.
     let me = env.linked(&caller, "the work", "acme/api#13").await;
 
     let e = env.sync(&caller, &me).await.unwrap_err();
     assert_eq!(code_of(&e), "tracker_sync_failed");
-    assert_eq!(e.data.as_ref().unwrap()["retriable"], true);
+    assert_eq!(e.data.as_ref().unwrap()["retriable"], false);
     assert!(outbox_rows(&env, "sync_ticket").await.is_empty());
+}
+
+/// A 5xx or a 429 on the read is GitHub having a bad moment, worth retrying;
+/// a 401, 403 or 422 is not.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_says_which_failed_issue_reads_are_worth_retrying(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    gh.set_issue(13, "Blocked by #99", LONG_AGO);
+
+    for (status, retriable) in [
+        (500, true),
+        (502, true),
+        (429, true),
+        (401, false),
+        (403, false),
+        (422, false),
+    ] {
+        gh.fail_issue_reads_with(status);
+        let e = env.sync(&caller, &me).await.unwrap_err();
+        assert_eq!(code_of(&e), "tracker_sync_failed", "{status}");
+        assert_eq!(
+            e.data.as_ref().unwrap()["retriable"],
+            retriable,
+            "{status}: {}",
+            e.message
+        );
+    }
+}
+
+/// A stored ticket_ref whose owner or repo is not a single path segment is
+/// refused before anything is sent: otherwise `..` and `/` would walk the
+/// request, and the installation token with it, to some other endpoint.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_refuses_a_ticket_ref_that_is_not_one_owner_and_one_repo(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    for (n, bad) in [
+        "a/b/c#1",
+        "../x#1",
+        "a/..#1",
+        "acme/x/../../orgs/y#1",
+        "acme/api#0",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let me = env.linked(&caller, &format!("bad ref {n}"), bad).await;
+        let e = env.sync(&caller, &me).await.unwrap_err();
+        assert_eq!(code_of(&e), "invalid_argument", "{bad}: {}", e.message);
+        assert!(
+            e.message.contains("not a valid GitHub issue reference"),
+            "{bad}: {}",
+            e.message
+        );
+    }
+    assert_eq!(gh.hits(), 0, "no request was made for any of them");
+}
+
+/// A dependency added from the issue survives a write-back that fails after
+/// it: the dependencies commit first, and the failure is the tracker's.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_failed_write_back_keeps_the_dependencies_it_followed(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    let blocker = env
+        .add_ticketed(&caller, "the blocker", "acme/api#14")
+        .await;
+    gh.set_issue(13, "Blocked by #14", LONG_AGO);
+    // Claimed before the blocker is known, so the job is under way and the
+    // sync has something to post.
+    env.claim(&caller, &me, "agent-one").await;
+    gh.fail_comments_with(502);
+
+    let e = env.sync(&caller, &me).await.unwrap_err();
+    assert_eq!(code_of(&e), "tracker_sync_failed");
+    assert_eq!(e.data.as_ref().unwrap()["retriable"], true);
+
+    assert!(outbox_rows(&env, "sync_ticket").await.is_empty());
+
+    // Once GitHub recovers, the retry finds the dependency already there.
+    *gh.comment_status.lock().unwrap() = None;
+    let out = env.sync(&caller, &me).await.unwrap();
+    assert_eq!(
+        out["blockers"],
+        serde_json::json!([
+            { "ticketRef": "acme/api#14", "outcome": "already", "jobs": [blocker] }
+        ])
+    );
+}
+
+/// Adding a dependency is a job write. A token with `trackers` alone still
+/// reads the issue and records drift, but adds no dependency.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_trackers_only_token_records_drift_but_adds_no_dependency(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    env.add_ticketed(&caller, "the blocker", "acme/api#14")
+        .await;
+    let later = (chrono::Utc::now() + chrono::Duration::minutes(5))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    gh.set_issue(13, "Blocked by #14", &later);
+    let trackers_only = principal(
+        caller.user_id,
+        caller.org_id,
+        vec![of_core::scopes::TRACKERS.to_string()],
+    );
+
+    let out = env.sync(&trackers_only, &me).await.unwrap();
+
+    assert_eq!(out["blockers"], serde_json::json!([]), "{out}");
+    assert_eq!(out["job"]["ticketStale"], true, "{out}");
+    assert!(env.blocked_ids(&caller).await.is_empty());
 }
 
 /// The pending path records the call exactly once, like every other success.

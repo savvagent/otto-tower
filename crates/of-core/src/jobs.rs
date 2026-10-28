@@ -495,10 +495,13 @@ pub trait JobsExt {
     ///
     /// Unlike [`Self::set_dependencies`], the cycle check runs *before* each
     /// insert, so a bad line is one outcome among several rather than an error
-    /// rolling back the lines around it. The race that ordering admits (a
-    /// concurrent edit closing the loop from the other side) is the same one a
-    /// caller of `set_dependencies` would hit in two calls, and the loop it
-    /// could leave is visible in `blocked` and removable.
+    /// rolling back the lines around it. Neither check is proof against a
+    /// concurrent dependency write: under READ COMMITTED, two transactions can
+    /// each see no path and each insert the edge that closes the loop, and
+    /// `set_dependencies` has the same race even within a single call. The
+    /// fix is a per-org lock taken by every dependency write, which is a
+    /// follow-up; until then a loop that slips through is visible in
+    /// `blocked` and removable with `set_dependencies`.
     fn add_ticket_dependencies(
         &mut self,
         id: &JobId,
@@ -2167,6 +2170,12 @@ impl JobsExt for Tx<'_> {
 
 pub(crate) trait JobsInternal {
     /// Allocate the next `job-N` sequence number from `org_counters`.
+    /// Allocate the next `job-N` sequence number for this org.
+    ///
+    /// The counter lives in this database's own `org_counters` table (it used to
+    /// be a column on the platform-side `orgs` row). The first call for an org
+    /// creates its row; every call takes the row lock, so two concurrent inserts
+    /// can never be handed the same number.
     async fn next_job_seq(&mut self) -> Result<i64>;
 
     /// The ids of jobs `scope` can see whose `ticket_ref` matches `ticket`,
@@ -2362,12 +2371,9 @@ impl JobsInternal for Tx<'_> {
         Ok(())
     }
 
-    /// Allocate the next `job-N` sequence number for this org.
-    ///
-    /// The counter lives in this database's own `org_counters` table (it used to
-    /// be a column on the platform-side `orgs` row). The first call for an org
-    /// creates its row; every call takes the row lock, so two concurrent inserts
-    /// can never be handed the same number.
+    /// The ids of the jobs `scope` may see whose ticket matches `ticket`,
+    /// newest first. At most eleven, so a caller can tell "ten" from "more
+    /// than ten" without reading every match.
     async fn visible_jobs_for_ticket(
         &mut self,
         ticket: &TicketQuery,
@@ -2452,6 +2458,12 @@ impl JobsInternal for Tx<'_> {
         Ok(BlockerKind::Added)
     }
 
+    /// Allocate the next `job-N` sequence number for this org.
+    ///
+    /// The counter lives in this database's own `org_counters` table (it used to
+    /// be a column on the platform-side `orgs` row). The first call for an org
+    /// creates its row; every call takes the row lock, so two concurrent inserts
+    /// can never be handed the same number.
     async fn next_job_seq(&mut self) -> Result<i64> {
         let seq: i64 = sqlx::query_scalar(
             "INSERT INTO org_counters (org_id, next_job_seq) VALUES ($1, 2) \

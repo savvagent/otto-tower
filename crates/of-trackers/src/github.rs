@@ -143,11 +143,8 @@ impl GithubAppClient {
         issue_number: i64,
         body: &str,
     ) -> Result<()> {
+        let url = self.issue_url(owner, repo, issue_number, "/comments")?;
         let token = self.installation_token(installation_id).await?;
-        let url = format!(
-            "{}/repos/{owner}/{repo}/issues/{issue_number}/comments",
-            self.api_base
-        );
         self.send_without_response(
             self.github_request(&token, reqwest::Method::POST, &url)
                 .json(&serde_json::json!({ "body": body })),
@@ -163,11 +160,8 @@ impl GithubAppClient {
         repo: &str,
         issue_number: i64,
     ) -> Result<Option<String>> {
+        let url = self.issue_url(owner, repo, issue_number, "")?;
         let token = self.installation_token(installation_id).await?;
-        let url = format!(
-            "{}/repos/{owner}/{repo}/issues/{issue_number}",
-            self.api_base
-        );
         let issue: IssueRecord = self
             .send_json(
                 self.github_request(&token, reqwest::Method::GET, &url),
@@ -186,11 +180,8 @@ impl GithubAppClient {
         repo: &str,
         issue_number: i64,
     ) -> Result<IssueView> {
+        let url = self.issue_url(owner, repo, issue_number, "")?;
         let token = self.installation_token(installation_id).await?;
-        let url = format!(
-            "{}/repos/{owner}/{repo}/issues/{issue_number}",
-            self.api_base
-        );
         self.send_json(
             self.github_request(&token, reqwest::Method::GET, &url),
             "fetching an issue",
@@ -205,11 +196,8 @@ impl GithubAppClient {
         repo: &str,
         issue_number: i64,
     ) -> Result<Vec<String>> {
+        let url = self.issue_url(owner, repo, issue_number, "/labels")?;
         let token = self.installation_token(installation_id).await?;
-        let url = format!(
-            "{}/repos/{owner}/{repo}/issues/{issue_number}/labels",
-            self.api_base
-        );
         let labels: Vec<Label> = self
             .send_json(
                 self.github_request(&token, reqwest::Method::GET, &url),
@@ -232,11 +220,8 @@ impl GithubAppClient {
             return Err(Error::InvalidGithubIssueState(state.to_string()));
         }
 
+        let url = self.issue_url(owner, repo, issue_number, "")?;
         let token = self.installation_token(installation_id).await?;
-        let url = format!(
-            "{}/repos/{owner}/{repo}/issues/{issue_number}",
-            self.api_base
-        );
         let issue: IssueRecord = self
             .send_json(
                 self.github_request(&token, reqwest::Method::PATCH, &url)
@@ -248,6 +233,36 @@ impl GithubAppClient {
             )
             .await?;
         Ok(issue.updated_at)
+    }
+
+    /// `{api_base}/repos/{owner}/{repo}/issues/{n}{suffix}`, refusing any
+    /// `owner` or `repo` outside `of_core::ticket_ref`'s segment grammar.
+    /// Those come from a stored `ticket_ref`, which a caller wrote, and the
+    /// request carries the installation token: a `/`, `..` or `%` in either
+    /// would point that token at an endpoint the reference never named. The
+    /// check runs before a token is minted, so a bad reference makes no
+    /// request at all.
+    fn issue_url(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: i64,
+        suffix: &str,
+    ) -> Result<String> {
+        if !of_core::ticket_ref::segment_ok(owner)
+            || !of_core::ticket_ref::segment_ok(repo)
+            || issue_number <= 0
+        {
+            return Err(Error::InvalidGithubIssueRef {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+                issue_number,
+            });
+        }
+        Ok(format!(
+            "{}/repos/{owner}/{repo}/issues/{issue_number}{suffix}",
+            self.api_base
+        ))
     }
 
     fn cached_installation_token(&self, installation_id: i64) -> Result<Option<String>> {
@@ -913,6 +928,46 @@ mod tests {
             "Bearer installation-token-1"
         );
         assert_eq!(requests[2].path, "/repos/octo/repo/issues/8");
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn an_unsafe_owner_or_repo_makes_no_request() {
+        let server = TestServer::start().await;
+        let client = GithubAppClient::new(42, TEST_KEY.into())
+            .expect("client")
+            .with_api_base(server.base_url.clone());
+
+        for (owner, repo) in [
+            ("a", "b/c"),
+            ("..", "x"),
+            ("a", ".."),
+            ("a%2F..", "b"),
+            ("", "b"),
+        ] {
+            let error = client
+                .get_issue(17, owner, repo, 1)
+                .await
+                .expect_err("an unsafe segment is refused");
+            assert!(
+                matches!(error, Error::InvalidGithubIssueRef { .. }),
+                "{owner:?}/{repo:?}: {error:?}"
+            );
+            let error = client
+                .post_comment(17, owner, repo, 1, "x")
+                .await
+                .expect_err("an unsafe segment is refused");
+            assert!(
+                matches!(error, Error::InvalidGithubIssueRef { .. }),
+                "{owner:?}/{repo:?}: {error:?}"
+            );
+        }
+        assert!(
+            client.get_issue(17, "a", "b", 0).await.is_err(),
+            "issue 0 is refused"
+        );
+        // Not even the installation token was minted.
+        assert!(server.requests().is_empty());
         server.shutdown().await;
     }
 

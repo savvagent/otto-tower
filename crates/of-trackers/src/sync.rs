@@ -1,6 +1,6 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use of_core::jobs::{Job, Status, Tracker};
-use of_core::ticket_ref::JobRef;
+use of_core::ticket_ref::{JobRef, TicketQuery};
 use of_core::trackers::{Provider, TrackerBinding};
 
 use crate::jira::Transition;
@@ -388,9 +388,93 @@ pub fn blocked_by(body: &str) -> Vec<String> {
     found
 }
 
+/// The issues `owner/repo`'s issue body says it is blocked by, as queries to
+/// look jobs up with: [`blocked_by`]'s references, with a short `#N` read as
+/// an issue in `owner/repo` itself (as GitHub reads it), so `#14` and
+/// `owner/repo#14` on one body are one blocker, not two.
+pub fn blocker_tickets(body: &str, owner: &str, repo: &str) -> Vec<TicketQuery> {
+    let mut tickets: Vec<TicketQuery> = Vec::new();
+    for raw in blocked_by(body) {
+        let qualified = if raw.starts_with('#') {
+            format!("{owner}/{repo}{raw}")
+        } else {
+            raw
+        };
+        match JobRef::parse(&qualified) {
+            Ok(JobRef::Ticket(t)) if !tickets.contains(&t) => tickets.push(t),
+            Ok(_) => {}
+            // Reachable only if `owner/repo` is itself outside the reference
+            // grammar, in which case no job could match it anyway.
+            Err(error) => {
+                tracing::warn!(owner, repo, %error, "skipping a Blocked by reference");
+            }
+        }
+    }
+    tickets
+}
+
+/// The time of a change to an issue that otto-tower did not make, if its
+/// `updated_at` says there was one: newer than `stored`, the revision
+/// otto-tower recorded after its own last write, or any readable revision when
+/// nothing was recorded. An unreadable `updated_at` is no evidence of a
+/// change. Whether that change makes the job stale is decided at read time,
+/// against when its description was written, so this only reports it.
+pub fn foreign_change(updated_at: Option<&str>, stored: Option<&str>) -> Option<DateTime<Utc>> {
+    let changed = updated_at.and_then(parse_remote_revision)?;
+    match stored.and_then(parse_remote_revision) {
+        Some(stored) if changed <= stored => None,
+        _ => Some(changed),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exact(tickets: &[TicketQuery]) -> Vec<String> {
+        tickets.iter().map(TicketQuery::exact).collect()
+    }
+
+    #[test]
+    fn short_blockers_are_qualified_with_the_issues_own_repo() {
+        let body = "Blocked by #14, Acme/API#14 and other/lib#3\nBlocked by #0014 and #15";
+        assert_eq!(
+            exact(&blocker_tickets(body, "Acme", "API")),
+            vec!["acme/api#14", "other/lib#3", "acme/api#15"]
+        );
+    }
+
+    #[test]
+    fn no_blocked_by_line_is_no_blockers() {
+        assert!(blocker_tickets("Depends on #14", "acme", "api").is_empty());
+        assert!(blocker_tickets("", "acme", "api").is_empty());
+    }
+
+    #[test]
+    fn a_revision_is_foreign_only_when_newer_than_the_stored_one() {
+        let at = "2026-09-03T18:13:00Z";
+        let later = "2026-09-03T18:14:00Z";
+        let parsed = parse_remote_revision(at);
+        assert_eq!(foreign_change(Some(at), None), parsed);
+        assert_eq!(foreign_change(Some(at), Some("not a time")), parsed);
+        assert_eq!(
+            foreign_change(Some(later), Some(at)),
+            parse_remote_revision(later)
+        );
+        assert_eq!(
+            foreign_change(Some(at), Some(at)),
+            None,
+            "otto-tower's own write"
+        );
+        assert_eq!(foreign_change(Some(at), Some(later)), None);
+        // The same instant in another offset is the same revision.
+        assert_eq!(
+            foreign_change(Some("2026-09-03T12:13:00-06:00"), Some(at)),
+            None
+        );
+        assert_eq!(foreign_change(None, Some(at)), None);
+        assert_eq!(foreign_change(Some("garbage"), None), None);
+    }
 
     #[test]
     fn a_single_reference() {

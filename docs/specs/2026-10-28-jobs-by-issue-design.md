@@ -438,3 +438,12 @@ both down:
   (`<=`). This is the weaker failure, a missed hint rather than a lost edit, and the next
   `sync_ticket` pull still catches any change after the stored revision. A guard of its own for
   `Changed` (comparing against `ticket_changed_at`) is a possible follow-up.
+- **"Blocked by" lines are untrusted input.** They come from the issue body, which anyone who can
+  edit the issue controls, not only the caller. What they can do is bounded: a line can only make
+  this job wait on a job the caller can see (and only when the caller's token has `jobs:write`, on
+  top of the `trackers` that `sync_ticket` needs), and nothing is ever removed. An unwanted
+  dependency is undone with `set_dependencies`.
+- **Concurrent dependency writes can close a loop.** The pre-insert cycle check runs under READ
+  COMMITTED, so two concurrent writes can each see no path and each insert half of a loop;
+  `set_dependencies` has the same race even within one call. A per-org lock taken by every
+  dependency write closes it, and is a follow-up.
