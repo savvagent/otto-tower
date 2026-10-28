@@ -1058,6 +1058,39 @@ async fn a_late_issue_edit_older_than_a_comment_is_still_applied(pool: PgPool) {
     assert!(job.ticket_stale);
 }
 
+/// GitHub can also deliver a comment after an issue edit made later than it.
+/// The edit moved the job's revision past the comment, but the comment is not
+/// in the edited body either, so it still marks the job; its redelivery
+/// changes nothing more.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_comment_delivered_after_a_later_issue_edit_still_marks_the_job(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+
+    let (t1, t2) = (hours_from_now(1), hours_from_now(2));
+    let edit = github_issue_edit(INSTALLATION, "acme/api", 17, "edited at t2", &t2);
+    assert_eq!(post_github_issue(&h, &edit).await.status(), StatusCode::OK);
+    let comment = github_comment(INSTALLATION, "acme/api", 17, &["trackers"], false, &t1);
+    for _ in 0..2 {
+        assert_eq!(
+            post_github_comment(&h, &comment).await.status(),
+            StatusCode::OK
+        );
+    }
+
+    let job = job_for(&h, org, "acme/api", 17).await;
+    assert!(job.ticket_stale);
+    assert_eq!(
+        job.ticket_changed_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        Some(t1)
+    );
+    assert_eq!(job.description.as_deref(), Some("edited at t2"));
+    assert_eq!(job.remote_revision.as_deref(), Some(t2.as_str()));
+}
+
 /// A bot's comment (otto-tower's own write-back among them) is not a change
 /// to the work.
 #[sqlx::test(migrations = "../of-core/migrations")]

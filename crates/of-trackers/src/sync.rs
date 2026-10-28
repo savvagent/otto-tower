@@ -29,9 +29,11 @@ pub enum InboundDecision {
     /// Someone other than a bot commented on (or edited or deleted a comment
     /// on) the issue of a live job: mark the job's description as possibly out
     /// of date (`note_ticket_changed(at)`) without rewriting it. GitHub only.
-    /// `at` is the issue's `updated_at`, already parsed. It is deliberately not
-    /// a revision to store: see the webhook route for why `Changed` leaves the
-    /// job's `remote_revision` alone.
+    /// `at` is the issue's `updated_at`, already parsed, and later than the
+    /// `ticket_changed_at` of the job as read (when it has one; a concurrent
+    /// delivery may have raised it since). It is deliberately not a revision to
+    /// store: see the webhook route for why `Changed` leaves the job's
+    /// `remote_revision` alone.
     Changed {
         at: DateTime<Utc>,
     },
@@ -74,6 +76,9 @@ pub fn inbound_decision(
     }
 
     if let Some(job) = existing {
+        if event.provider == Provider::Github && event.kind == WebhookEventKind::IssueComment {
+            return github_comment_decision(event, job);
+        }
         if is_stale_or_echoed(
             job.remote_revision.as_deref(),
             event.issue.updated_at.as_deref(),
@@ -97,43 +102,6 @@ pub fn inbound_decision(
                 result: None,
                 error: None,
                 remote_revision,
-            }
-        }
-        // A comment is what a job's description has not absorbed, so it marks
-        // the job rather than rewriting it: the comment event's issue snapshot
-        // carries the same body the job already has. A GitHub comment event
-        // never reports a close (its action is the comment's: created, edited,
-        // deleted), so the close arm above never takes one; the order only
-        // matters for JIRA comment events carrying a done status, which this
-        // arm does not match.
-        Some(_job)
-            if event.provider == Provider::Github
-                && event.kind == WebhookEventKind::IssueComment =>
-        {
-            // The bot filter is what keeps otto-tower's own write-back comment
-            // (a claim or completion note) from flagging its own job: that
-            // comment's webhook can arrive before the write-back has stored
-            // its `remote_revision`, so the echo check above cannot catch it.
-            // It also ignores other apps' bots, which is the intent: a CI
-            // status comment is not a change to what the work is. It assumes
-            // write-backs are posted as the GitHub App (`GithubAppClient`
-            // authenticates as an installation), which they are.
-            let by_bot = event
-                .issue
-                .comment
-                .as_ref()
-                .is_some_and(|comment| comment.author_is_bot);
-            match event
-                .issue
-                .updated_at
-                .as_deref()
-                .and_then(parse_remote_revision)
-            {
-                // Without the issue's own timestamp there is no time to record,
-                // so the comment is not counted rather than stamped with a
-                // guessed time.
-                Some(at) if !by_bot => InboundDecision::Changed { at },
-                _ => InboundDecision::NoOp,
             }
         }
         Some(_job) => {
@@ -174,6 +142,58 @@ pub fn inbound_decision(
             }
         }
     }
+}
+
+/// A GitHub comment on the issue of an existing job. A comment is what a job's
+/// description has not absorbed, so it marks the job rather than rewriting it:
+/// the comment event's issue snapshot carries the same body the job already
+/// has. A GitHub comment event never reports a close either (its action is the
+/// comment's: created, edited, deleted).
+///
+/// The shared echo check does not apply. `remote_revision` is the issue
+/// revision whose body the job holds, and a later issue edit or otto-tower's
+/// own write-back moves it past a comment the job has still not seen, so
+/// comparing against it would drop that comment. The guard is instead
+/// `ticket_changed_at`, the newest foreign change already counted: a comment
+/// no later than it (a redelivery, or an older comment arriving after a newer
+/// one) has nothing to add, and neither has a second comment in the same
+/// second as one counted, since the mark already holds that time. Whether a
+/// counted comment makes the job stale is
+/// still decided against `described_at`, so one older than the job's last
+/// re-description does not.
+fn github_comment_decision(event: &WebhookEvent, job: &Job) -> InboundDecision {
+    if job.status.is_terminal() {
+        return InboundDecision::NoOp;
+    }
+    // The bot filter is what keeps otto-tower's own write-back comment (a
+    // claim or completion note) from flagging its own job, since no echo check
+    // runs ahead of a comment. It also ignores other apps' bots, which is the
+    // intent: a CI status comment is not a change to what the work is. It
+    // assumes write-backs are posted as the GitHub App (`GithubAppClient`
+    // authenticates as an installation), which they are, and that GitHub
+    // sends the comment's `user.type`, which it does for every comment.
+    let by_bot = event
+        .issue
+        .comment
+        .as_ref()
+        .is_some_and(|comment| comment.author_is_bot);
+    if by_bot {
+        return InboundDecision::NoOp;
+    }
+    // Without the issue's own timestamp there is no time to record, so the
+    // comment is not counted rather than stamped with a guessed time.
+    let Some(at) = event
+        .issue
+        .updated_at
+        .as_deref()
+        .and_then(parse_remote_revision)
+    else {
+        return InboundDecision::NoOp;
+    };
+    if job.ticket_changed_at.is_some_and(|counted| at <= counted) {
+        return InboundDecision::Drop;
+    }
+    InboundDecision::Changed { at }
 }
 
 pub fn outbound_decision(
