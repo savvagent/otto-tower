@@ -1,6 +1,6 @@
 # Late comment stale mark design
 
-> **Status:** DRAFT. A GitHub comment webhook is guarded by the job's `ticket_changed_at` instead of
+> **Status:** IMPLEMENTED (PR #263, 2026-10-28; merged as 77dc932). A GitHub comment webhook is guarded by the job's `ticket_changed_at` instead of
 > its `remote_revision`, so a human comment delivered after a newer issue revision was stored still
 > marks the job `ticketStale`. No tool, field, route, migration or env var changes.
 > Closes savvagent/otto-factory#259.
