@@ -14,7 +14,7 @@ implements it exactly.
 ✅ Shipped in PR #268 (squash bb7c0b3). Review moved the key to the SHA-256 of the signed body
 alone (the delivery id is a non-unique diagnostic column) and added the `issues`-payload shape
 check. Deferred findings: #271 (replay past the retention window, installation moves) and #273
-(pinned-only `WITH CHECK`, a positive event-shape check, JIRA replay, the repeat-branch log level).
+(pinned-only `WITH CHECK`, a positive event-shape check, JIRA replay, logging the repeat branch at `warn`).
 
 ## Global Constraints
 
@@ -39,11 +39,13 @@ check. Deferred findings: #271 (replay past the retention window, installation m
 | `crates/of-core/src/tracker_deliveries.rs` | **Create.** `record` (pinned insert-if-new) and `sweep` (org-less retention delete). |
 | `crates/of-core/src/lib.rs` | **Modify.** `pub mod tracker_deliveries;` |
 | `crates/of-core/src/platform_events.rs` | **Modify.** `org_deleted` purges `tracker_deliveries`. |
-| `crates/of-core/tests/tracker_deliveries.rs` | **Create.** Repeat detection by body digest, per-org keys, RLS cross-org test as `otto_app`, sweep as `otto_app`, org purge. |
+| `crates/of-core/tests/platform_events.rs` | **Modify.** `org_deleted_purges_that_org_and_only_that_org` covers `tracker_deliveries`. |
+| `crates/of-core/tests/tracker_deliveries.rs` | **Create.** Repeat detection by body digest, per-org keys, RLS cross-org test as `otto_app`, sweep as `otto_app`. |
 | `crates/of-trackers/src/webhook.rs` | **Modify.** `github_delivery(headers, body)` (digest + diagnostic id); `issues` payload shape check; unit tests. |
 | `crates/of-web/src/routes/webhooks.rs` | **Modify.** Record before `apply` in each pass; `200` on a repeat. |
 | `crates/of-web/tests/webhooks_http.rs` | **Modify.** Repeated delivery, body replay, wrong event, second-pass record, malformed id. |
 | `crates/of-server/src/main.rs` | **Modify.** `sweep_loop` also sweeps `tracker_deliveries` (30 days). |
+| `CLAUDE.md` | **Modify.** Names `tracker_deliveries` among the two-branch policies. |
 
 ## Task Order & Rationale
 
