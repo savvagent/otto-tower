@@ -509,15 +509,19 @@ fn inbound_github_bot_comment_is_a_no_op() {
     );
 }
 
+/// A comment no later than the change already counted on the job (a
+/// redelivery, or an older comment arriving after a newer one) has nothing to
+/// add, whatever the job's stored revision.
 #[test]
-fn inbound_github_echoed_comment_is_dropped() {
+fn inbound_github_comment_already_counted_is_dropped() {
     let binding = binding(Provider::Github, "otto-factory");
-    let existing = job(
+    let mut existing = job(
         Status::Pending,
         Tracker::Github,
         "acme/api#17",
-        Some("2026-09-03T12:00:00Z"),
+        Some("2026-09-03T10:00:00Z"),
     );
+    existing.ticket_changed_at = Some(at("2026-09-03T12:00:00Z"));
     for updated_at in ["2026-09-03T12:00:00Z", "2026-09-03T11:00:00Z"] {
         let event = github_comment_event("created", "open", Some(updated_at), false);
         assert_eq!(
@@ -525,6 +529,32 @@ fn inbound_github_echoed_comment_is_dropped() {
             of_trackers::sync::InboundDecision::Drop,
             "{updated_at}"
         );
+    }
+}
+
+/// A comment is not part of the issue body the stored revision describes, so a
+/// comment no newer than that revision (delivered after a later issue edit or
+/// otto-tower's own write-back, or made in the same second) is still a change
+/// the job has not counted.
+#[test]
+fn inbound_github_comment_older_than_the_stored_revision_is_changed() {
+    let binding = binding(Provider::Github, "otto-factory");
+    for counted in [None, Some(at("2026-09-03T10:00:00Z"))] {
+        let mut existing = job(
+            Status::InProgress,
+            Tracker::Github,
+            "acme/api#17",
+            Some("2026-09-03T12:00:00Z"),
+        );
+        existing.ticket_changed_at = counted;
+        for updated_at in ["2026-09-03T12:00:00Z", "2026-09-03T11:00:00Z"] {
+            let event = github_comment_event("created", "open", Some(updated_at), false);
+            assert_eq!(
+                of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+                of_trackers::sync::InboundDecision::Changed { at: at(updated_at) },
+                "{counted:?} {updated_at}"
+            );
+        }
     }
 }
 

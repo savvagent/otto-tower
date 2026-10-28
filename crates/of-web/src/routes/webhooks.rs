@@ -342,10 +342,13 @@ async fn apply(
                                     // comment's time would make the echo check
                                     // drop an earlier `issues` edit that GitHub
                                     // delivers after the comment, losing that
-                                    // edit. A redelivered comment needs no echo
-                                    // guard: `note_ticket_changed` keeps the
-                                    // later time, so applying it twice is the
-                                    // same as once.
+                                    // edit. A redelivered comment is dropped by
+                                    // `inbound_decision`'s own guard (its time
+                                    // against `ticket_changed_at`), and two
+                                    // deliveries racing past it are still
+                                    // harmless: `note_ticket_changed_if_linked`
+                                    // keeps the later time, so applying one
+                                    // twice is the same as once.
                                     //
                                     // `existing` was read unlocked, so the
                                     // mark is conditional on the job still
