@@ -1208,6 +1208,7 @@ async fn one_orgs_token_cannot_see_or_touch_anothers_work(pool: PgPool) {
                 remote: None,
                 mine: false,
                 agent_type: None,
+                ticket: None,
                 limit: None,
             }),
         )
@@ -3759,6 +3760,7 @@ impl Teams {
                     remote: None,
                     mine: false,
                     agent_type: None,
+                    ticket: None,
                     limit: None,
                 }),
             )
@@ -4074,6 +4076,7 @@ async fn a_platform_outage_refuses_team_scoped_reads_and_writes(pool: PgPool) {
                 remote: None,
                 mine: false,
                 agent_type: None,
+                ticket: None,
                 limit: None,
             }),
         )
@@ -5789,4 +5792,392 @@ fn register_repo_states_the_slug_limit_in_its_description_and_schema() {
         .unwrap_or_default();
     assert!(slug_doc.contains(&limit), "{slug_doc}");
     assert!(slug_doc.contains("invalid_repo_slug"), "{slug_doc}");
+}
+
+// ------------------------------------------------------- jobs by their issue
+
+impl Env {
+    /// Queue a job linked to an issue, the way `add_job` records any ticketRef.
+    async fn add_ticketed(&self, caller: &Principal, title: &str, ticket: &str) -> String {
+        ok(self
+            .factory
+            .add_job(
+                Extension(parts(caller)),
+                Parameters(tools::jobs::AddJobArgs {
+                    title: title.into(),
+                    description: None,
+                    repo: Some("api".into()),
+                    remote: None,
+                    ticket_ref: Some(ticket.into()),
+                    agent_type: None,
+                    metadata: None,
+                    depends_on: vec![],
+                    idempotency_key: None,
+                }),
+            )
+            .await)["job"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    async fn get_job_by(
+        &self,
+        caller: &Principal,
+        job: &str,
+    ) -> Result<Json<tools::out::JobOut>, ErrorData> {
+        self.factory
+            .get_job(
+                Extension(parts(caller)),
+                Parameters(tools::jobs::JobArgs { job: job.into() }),
+            )
+            .await
+    }
+
+    async fn list_by_ticket(
+        &self,
+        caller: &Principal,
+        ticket: &str,
+    ) -> Result<Json<tools::out::JobsOut>, ErrorData> {
+        self.factory
+            .list_jobs(
+                Extension(parts(caller)),
+                Parameters(tools::jobs::ListJobsArgs {
+                    status: None,
+                    repo: None,
+                    remote: None,
+                    mine: false,
+                    agent_type: None,
+                    ticket: Some(ticket.into()),
+                    limit: None,
+                }),
+            )
+            .await
+    }
+}
+
+fn sorted_ids(v: &serde_json::Value) -> Vec<String> {
+    let mut ids: Vec<String> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| j["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn get_job_accepts_the_jobs_issue_in_either_form(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let id = env.add_ticketed(&caller, "fix login", "acme/api#13").await;
+    env.add_ticketed(&caller, "unrelated", "acme/api#113").await;
+
+    for raw in ["#13", "acme/api#13", "Acme/API#13"] {
+        let got = ok(env.get_job_by(&caller, raw).await);
+        assert_eq!(got["job"]["id"], id.as_str(), "{raw}");
+    }
+
+    let e = err(env.get_job_by(&caller, "#x").await);
+    assert_eq!(code_of(&e), "invalid_argument");
+    assert!(e.message.contains("owner/repo#928"), "{}", e.message);
+
+    let e = err(env.get_job_by(&caller, "#99").await);
+    assert_eq!(code_of(&e), "job_not_found");
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn an_issue_two_jobs_carry_is_refused_naming_both(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let first = env.add_ticketed(&caller, "first try", "acme/api#13").await;
+    let second = env.add_ticketed(&caller, "second try", "acme/api#13").await;
+
+    let e = err(env.get_job_by(&caller, "#13").await);
+    assert_eq!(code_of(&e), "ambiguous_ticket_ref");
+    assert!(e.message.contains(&first), "{}", e.message);
+    assert!(e.message.contains(&second), "{}", e.message);
+
+    let listed = ok(env.list_by_ticket(&caller, "#13").await);
+    let mut want = vec![first, second];
+    want.sort();
+    assert_eq!(sorted_ids(&listed["jobs"]), want);
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn list_jobs_filters_by_issue_and_refuses_a_job_id(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let id = env.add_ticketed(&caller, "fix login", "acme/api#13").await;
+    env.add_ticketed(&caller, "other", "acme/api#14").await;
+    env.add_job(&caller, "no issue").await;
+
+    let listed = ok(env.list_by_ticket(&caller, "#13").await);
+    assert_eq!(sorted_ids(&listed["jobs"]), vec![id]);
+
+    // Blank is absent: every job.
+    let all = ok(env.list_by_ticket(&caller, "  ").await);
+    assert_eq!(all["jobs"].as_array().unwrap().len(), 3);
+
+    let e = err(env.list_by_ticket(&caller, "job-1").await);
+    assert_eq!(code_of(&e), "invalid_argument");
+    assert!(e.message.contains("ticket"), "{}", e.message);
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn set_dependencies_resolves_every_issue_reference(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let a = env.add_ticketed(&caller, "a", "acme/api#13").await;
+    let b = env.add_ticketed(&caller, "b", "acme/api#14").await;
+
+    let deps = ok(env
+        .factory
+        .set_dependencies(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::SetDependenciesArgs {
+                job: "#13".into(),
+                add: vec!["#14".into()],
+                remove: vec![],
+            }),
+        )
+        .await);
+    assert_eq!(deps["job"], a.as_str());
+    assert_eq!(deps["dependencies"], serde_json::json!([b]));
+
+    let deps = ok(env
+        .factory
+        .set_dependencies(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::SetDependenciesArgs {
+                job: "acme/api#13".into(),
+                add: vec![],
+                remove: vec!["#14".into()],
+            }),
+        )
+        .await);
+    assert_eq!(deps["job"], a.as_str());
+    assert_eq!(deps["dependencies"], serde_json::json!([]));
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn the_job_lifecycle_round_trips_by_issue(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let a = env.add_ticketed(&caller, "a", "acme/api#13").await;
+    let b = env.add_ticketed(&caller, "b", "acme/api#14").await;
+
+    let updated = ok(env
+        .factory
+        .update_job(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::UpdateJobArgs {
+                job: "#13".into(),
+                title: Some("a, retitled".into()),
+                description: None,
+                agent_type: None,
+                metadata: None,
+            }),
+        )
+        .await);
+    assert_eq!(updated["job"]["id"], a.as_str());
+    assert_eq!(updated["job"]["title"], "a, retitled");
+
+    let claimed = ok(env
+        .factory
+        .claim_jobs(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::ClaimJobsArgs {
+                jobs: vec!["#13".into(), "acme/api#14".into()],
+                agent: None,
+                ttl: None,
+            }),
+        )
+        .await);
+    let mut want = vec![a.clone(), b.clone()];
+    want.sort();
+    assert_eq!(sorted_ids(&claimed["jobs"]), want);
+
+    let renewed = ok(env
+        .factory
+        .renew_claim(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::RenewClaimArgs {
+                job: "#13".into(),
+                ttl: Some(600),
+                expected_attempts: None,
+            }),
+        )
+        .await);
+    assert_eq!(renewed["job"]["id"], a.as_str());
+
+    let done = ok(env
+        .factory
+        .complete_job(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::CompleteJobArgs {
+                job: "#13".into(),
+                result: Some("fixed".into()),
+                expected_attempts: None,
+            }),
+        )
+        .await);
+    assert_eq!(done["job"]["id"], a.as_str());
+    assert_eq!(done["job"]["status"], "completed");
+
+    let failed = ok(env
+        .factory
+        .fail_job(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::FailJobArgs {
+                job: "#14".into(),
+                error: Some("could not reproduce".into()),
+                expected_attempts: None,
+            }),
+        )
+        .await);
+    assert_eq!(failed["job"]["id"], b.as_str());
+    assert_eq!(failed["job"]["status"], "failed");
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn add_job_depends_on_an_issue(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    env.add_ticketed(&caller, "first", "acme/api#13").await;
+
+    let later = ok(env
+        .factory
+        .add_job(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::AddJobArgs {
+                title: "after #13".into(),
+                description: None,
+                repo: Some("api".into()),
+                remote: None,
+                ticket_ref: None,
+                agent_type: None,
+                metadata: None,
+                depends_on: vec!["#13".into()],
+                idempotency_key: None,
+            }),
+        )
+        .await)["job"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let blocked = ok(env
+        .factory
+        .blocked(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::RepoScopeArgs::default()),
+        )
+        .await);
+    assert_eq!(sorted_ids(&blocked["jobs"]), vec![later]);
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn an_add_job_replay_matches_on_the_resolved_dependency(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let dep = env.add_ticketed(&caller, "first", "acme/api#13").await;
+
+    let args = |depends_on: &str| tools::jobs::AddJobArgs {
+        title: "after #13".into(),
+        description: None,
+        repo: Some("api".into()),
+        remote: None,
+        ticket_ref: None,
+        agent_type: None,
+        metadata: None,
+        depends_on: vec![depends_on.into()],
+        idempotency_key: Some("retry-1".into()),
+    };
+    let first = ok(env
+        .factory
+        .add_job(Extension(parts(&caller)), Parameters(args("#13")))
+        .await);
+    let second = ok(env
+        .factory
+        .add_job(Extension(parts(&caller)), Parameters(args(&dep)))
+        .await);
+    assert_eq!(first["job"]["id"], second["job"]["id"]);
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_lease_taken_for_an_issue_records_and_shows_its_job(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let id = env.add_ticketed(&caller, "fix login", "acme/api#13").await;
+
+    let lease = ok(env
+        .factory
+        .acquire_lease(
+            Extension(parts(&caller)),
+            Parameters(tools::coord::AcquireLeaseArgs {
+                resource: Some("branch:fix-login".into()),
+                branch: None,
+                repo: Some("api".into()),
+                remote: None,
+                agent: None,
+                job: Some("#13".into()),
+                ttl_seconds: None,
+            }),
+        )
+        .await);
+    assert_eq!(lease["lease"]["jobId"], id.as_str());
+
+    let live = ok(env
+        .factory
+        .list_leases(
+            Extension(parts(&caller)),
+            Parameters(tools::coord::RepoScopeArgs::default()),
+        )
+        .await);
+    assert_eq!(live["leases"][0]["jobId"], id.as_str());
+    assert_eq!(live["leases"][0]["jobTicketRef"], "acme/api#13");
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn send_message_resolves_an_issue_and_replays_across_spellings(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let id = env.add_ticketed(&caller, "fix login", "acme/api#13").await;
+
+    let args = |job: &str, key: Option<&str>| tools::coord::SendMessageArgs {
+        body: "picking this up".into(),
+        kind: None,
+        repo: Some("api".into()),
+        remote: None,
+        team: None,
+        job: Some(job.into()),
+        in_reply_to: None,
+        agent: None,
+        idempotency_key: key.map(str::to_string),
+    };
+
+    let unkeyed = ok(env
+        .factory
+        .send_message(Extension(parts(&caller)), Parameters(args("#13", None)))
+        .await);
+    assert_eq!(unkeyed["message"]["jobId"], id.as_str());
+
+    let first = ok(env
+        .factory
+        .send_message(
+            Extension(parts(&caller)),
+            Parameters(args("#13", Some("retry-1"))),
+        )
+        .await);
+    assert_eq!(first["message"]["jobId"], id.as_str());
+    let second = ok(env
+        .factory
+        .send_message(
+            Extension(parts(&caller)),
+            Parameters(args(&id, Some("retry-1"))),
+        )
+        .await);
+    assert_eq!(first["message"]["id"], second["message"]["id"]);
 }

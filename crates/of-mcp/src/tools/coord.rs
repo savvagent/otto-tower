@@ -10,7 +10,6 @@ use of_core::leases::LeasesExt;
 use of_core::messages::MessagesExt;
 use std::time::Duration;
 
-use of_core::ids::JobId;
 use of_core::messages::{ChannelRef, InboxQuery, MessageKind, NewMessage, SenderKind};
 use of_core::repos::{Hold, ReposExt};
 use of_core::watch::Outcome;
@@ -21,8 +20,8 @@ use rmcp::{tool, tool_router};
 use serde::Deserialize;
 
 use super::{
-    channel_arg, channel_of, ensure_job_visible, maybe_repo_of, out, repo_for_write, scope,
-    ChannelArg,
+    channel_arg, channel_of, ensure_job_visible, job_ref, maybe_repo_of, out, repo_for_write,
+    scope, ChannelArg,
 };
 use crate::server::{Factory, McpResult};
 
@@ -69,7 +68,8 @@ pub struct AcquireLeaseArgs {
     /// same as omitting it.
     #[serde(default)]
     pub agent: Option<String>,
-    /// The job this lease is for, if there is one.
+    /// The job this lease is for, if there is one. A job id like "job-42", or the job's issue as
+    /// "#928" or "owner/repo#928".
     #[serde(default)]
     pub job: Option<String>,
     /// How long to hold it before it expires. Defaults to 15 minutes, capped
@@ -124,7 +124,8 @@ pub struct SendMessageArgs {
     /// repo/remote, not both.
     #[serde(default)]
     pub team: Option<String>,
-    /// The job this is about, if any.
+    /// The job this is about, if any. A job id like "job-42", or the job's issue as "#928" or
+    /// "owner/repo#928".
     #[serde(default)]
     pub job: Option<String>,
     /// The id of the message you are replying to.
@@ -311,14 +312,11 @@ impl Factory {
             }
         };
 
-        let job = args.job.map(JobId::from);
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "acquire_lease").await?;
         let repo = repo_for_write(&mut tx, &team, args.repo, args.remote, Hold::Shared).await?;
-        if let Some(job) = &job {
-            ensure_job_visible(&mut tx, &team, job).await?;
-        }
+        let job = job_arg(&mut tx, &team, args.job.as_deref()).await?;
         let mut lease = tx
             .acquire_lease(
                 repo.id,
@@ -465,9 +463,7 @@ impl Factory {
         let Some(key) = args.idempotency_key else {
             self.charge(&mut tx, &caller, "send_message").await?;
             let repo_id = repo_id_of(channel_of(&mut tx, &team, arg, true).await?);
-            if let Some(job) = &args.job {
-                ensure_job_visible(&mut tx, &team, &JobId::from(job.clone())).await?;
-            }
+            let job_id = job_arg(&mut tx, &team, args.job.as_deref()).await?;
             if let Some(parent) = args.in_reply_to {
                 tx.reply_parent(parent, &team).await.mcp()?;
             }
@@ -486,7 +482,7 @@ impl Factory {
                         sender_kind: SenderKind::Agent,
                         sender_label: args.agent,
                         repo_id,
-                        job_id: args.job.map(JobId::from),
+                        job_id,
                         in_reply_to: args.in_reply_to,
                         ..Default::default()
                     },
@@ -500,9 +496,9 @@ impl Factory {
         // A key was supplied: replay-vs-new must be resolved before
         // charging, which needs the channel to build the payload to check.
         let repo_id = repo_id_of(channel_of(&mut tx, &team, arg, true).await?);
-        if let Some(job) = &args.job {
-            ensure_job_visible(&mut tx, &team, &JobId::from(job.clone())).await?;
-        }
+        // Resolved before the fingerprint is taken, so a replay that names the
+        // job by its issue once and by its id the next still replays.
+        let job_id = job_arg(&mut tx, &team, args.job.as_deref()).await?;
         if let Some(parent) = args.in_reply_to {
             tx.reply_parent(parent, &team).await.mcp()?;
         }
@@ -513,7 +509,7 @@ impl Factory {
             sender_kind: SenderKind::Agent,
             sender_label: args.agent,
             repo_id,
-            job_id: args.job.map(JobId::from),
+            job_id,
             in_reply_to: args.in_reply_to,
             idempotency_key: Some(key),
         };
@@ -743,6 +739,21 @@ fn repo_id_of(channel: ChannelRef) -> Option<of_core::ids::RepoId> {
         ChannelRef::Repo(r) => Some(r),
         ChannelRef::Team(_) => None,
     }
+}
+
+/// An optional job argument, resolved (an id or an issue reference) and
+/// checked visible with its repo held, since every caller goes on to write.
+async fn job_arg(
+    tx: &mut otto_tenant::Tx<'_>,
+    team: &of_core::teams::TeamScope,
+    raw: Option<&str>,
+) -> Result<Option<of_core::ids::JobId>, ErrorData> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let job = job_ref(tx, team, raw).await?;
+    ensure_job_visible(tx, team, &job).await?;
+    Ok(Some(job))
 }
 
 /// Blank a returned lease's `job_id` if the caller cannot see that job, as

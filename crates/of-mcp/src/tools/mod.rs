@@ -210,6 +210,30 @@ pub(crate) async fn maybe_repo_of(
     Ok(Some(repo_of(tx, team, slug, remote).await?.id))
 }
 
+/// Turn a job argument into a job id: `"job-42"` as itself, `"#928"` or
+/// `"owner/repo#928"` as the one job `team` can see that carries that issue.
+///
+/// Call it inside the transaction and ahead of the tool's own visibility check
+/// (`visible_job`, `ensure_job_visible`). A job id costs no query, so that check
+/// still raises exactly the error it always did for one; only an issue
+/// reference can fail here (malformed, unmatched, or ambiguous).
+pub(crate) async fn job_ref(
+    tx: &mut Tx<'_>,
+    team: &TeamScope,
+    raw: &str,
+) -> Result<JobId, ErrorData> {
+    tx.resolve_job_ref(raw, team).await.mcp()
+}
+
+/// [`job_ref`] for each of `raw`, in order, stopping at the first refusal.
+pub(crate) async fn job_refs(
+    tx: &mut Tx<'_>,
+    team: &TeamScope,
+    raw: &[String],
+) -> Result<Vec<JobId>, ErrorData> {
+    tx.resolve_job_refs(raw, team).await.mcp()
+}
+
 /// Fetch a job the caller may see. A job of a team the caller is not on is
 /// `job_not_found`, the same as one that does not exist.
 pub(crate) async fn visible_job(

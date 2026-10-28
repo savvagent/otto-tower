@@ -9,9 +9,9 @@
 //! work you have not claimed is how two agents end up writing the same file.
 
 use of_core::audit::action;
-use of_core::ids::JobId;
 use of_core::jobs::JobsExt;
 use of_core::jobs::{Job, JobFilter, NewJob, Status, Tracker};
+use of_core::ticket_ref::{JobRef, TicketQuery};
 use of_core::trackers::{
     decode_stored_secret, get_connection, resolve_binding, upsert_connection, Provider,
     TrackerBinding, TrackerConnection,
@@ -29,15 +29,27 @@ use rmcp::{tool, tool_router};
 use serde::Deserialize;
 
 use super::{
-    ensure_job_visible, ensure_jobs_visible, maybe_repo_of, out, redact_foreign_ids,
-    repo_for_write, retain_visible, scope, visible_ids, visible_job,
+    ensure_job_visible, ensure_jobs_visible, job_ref, job_refs, maybe_repo_of, out,
+    redact_foreign_ids, repo_for_write, retain_visible, scope, visible_ids, visible_job,
 };
 use crate::server::{Factory, McpResult};
 use of_core::repos::Hold;
 
-/// Turn caller-supplied job ids into the domain type.
-fn ids(raw: Vec<String>) -> Vec<JobId> {
-    raw.into_iter().map(JobId::from).collect()
+/// `list_jobs`'s `ticket` filter. Blank is absent, as for the repo filters.
+/// A job id is refused rather than ignored: a filter that silently matched
+/// every job would answer a question the caller did not ask.
+fn ticket_filter(raw: Option<&str>) -> of_core::Result<Option<TicketQuery>> {
+    let Some(raw) = raw.filter(|r| !r.trim().is_empty()) else {
+        return Ok(None);
+    };
+    match JobRef::parse(raw)? {
+        JobRef::Ticket(t) => Ok(Some(t)),
+        JobRef::Id(_) => Err(of_core::Error::Invalid(
+            "ticket takes an issue reference like \"#928\" or \"owner/repo#928\"; to fetch a \
+             job by its id, call get_job"
+                .into(),
+        )),
+    }
 }
 
 fn provider_of(tracker: Tracker) -> Provider {
@@ -106,7 +118,8 @@ pub struct AddJobArgs {
     /// workflow's fields go here.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
-    /// Job ids that must be completed before this one can be claimed.
+    /// Jobs that must be completed before this one can be claimed. Each is
+    /// a job id like "job-42", or the job's issue as "#928" or "owner/repo#928".
     #[serde(default)]
     pub depends_on: Vec<String>,
     /// A caller-chosen key. Replaying add_job with the same key and the same
@@ -123,7 +136,7 @@ pub struct AddJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct JobArgs {
-    /// The job id, like "job-42".
+    /// A job id like "job-42", or the job's issue as "#928" or "owner/repo#928".
     pub job: String,
 }
 
@@ -146,6 +159,12 @@ pub struct ListJobsArgs {
     /// take). Omit to see every job regardless of `agent_type`.
     #[serde(default)]
     pub agent_type: Option<String>,
+    /// Only the jobs linked to this issue, as "#928" (that number in any
+    /// repo) or "owner/repo#928". The way to see every job an ambiguous issue
+    /// reference matched. A job id here is invalid_argument; use get_job.
+    /// Blank is the same as omitting it.
+    #[serde(default)]
+    pub ticket: Option<String>,
     /// Maximum rows. Defaults to the server's own limit.
     #[serde(default)]
     pub limit: Option<i64>,
@@ -181,6 +200,7 @@ pub struct ReadyArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateJobArgs {
+    /// The job to change. A job id like "job-42", or the job's issue as "#928" or "owner/repo#928".
     pub job: String,
     #[serde(default)]
     pub title: Option<String>,
@@ -196,7 +216,8 @@ pub struct UpdateJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClaimJobsArgs {
-    /// The job ids to take. All or none succeed.
+    /// The jobs to take. All or none succeed. Each is a job id like "job-42", or the job's issue as
+    /// "#928" or "owner/repo#928".
     pub jobs: Vec<String>,
     /// How you want to be identified to teammates looking at the queue, for
     /// example "api-agent@ci-7". At most 128 characters on one line, with no
@@ -216,6 +237,8 @@ pub struct ClaimJobsArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompleteJobArgs {
+    /// The job you finished. A job id like "job-42", or the job's issue as "#928" or
+    /// "owner/repo#928".
     pub job: String,
     /// What you did, for whoever reads this later.
     #[serde(default)]
@@ -237,6 +260,8 @@ pub struct CompleteJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FailJobArgs {
+    /// The job you could not finish. A job id like "job-42", or the job's issue as "#928" or
+    /// "owner/repo#928".
     pub job: String,
     /// Why it failed, specifically enough that the next attempt can do better.
     #[serde(default)]
@@ -258,7 +283,8 @@ pub struct FailJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenewClaimArgs {
-    /// The job you are still working on.
+    /// The job you are still working on. A job id like "job-42", or the job's issue as "#928" or
+    /// "owner/repo#928".
     pub job: String,
     /// Seconds from now until the claim expires — not added to whatever
     /// time was left on it. Same default (900s) and clamp range (60 seconds
@@ -283,7 +309,8 @@ pub struct RenewClaimArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RequestCancelArgs {
-    /// The job to ask to stop.
+    /// The job to ask to stop. A job id like "job-42", or the job's issue as "#928" or
+    /// "owner/repo#928".
     pub job: String,
     /// Why, for whoever is holding it and for the audit trail.
     #[serde(default)]
@@ -293,7 +320,8 @@ pub struct RequestCancelArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CancelJobArgs {
-    /// The job you were working on and are stopping.
+    /// The job you were working on and are stopping. A job id like "job-42", or the job's issue as
+    /// "#928" or "owner/repo#928".
     pub job: String,
     /// What you were doing when you stopped, for whoever reads this later.
     #[serde(default)]
@@ -315,12 +343,13 @@ pub struct CancelJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SetDependenciesArgs {
-    /// The job whose dependencies are changing.
+    /// The job whose dependencies are changing. A job id like "job-42", or the job's issue as
+    /// "#928" or "owner/repo#928".
     pub job: String,
-    /// Job ids this job should wait for.
+    /// Jobs this job should wait for, each named the same way as `job`.
     #[serde(default)]
     pub add: Vec<String>,
-    /// Job ids it should stop waiting for.
+    /// Jobs it should stop waiting for, each named the same way as `job`.
     #[serde(default)]
     pub remove: Vec<String>,
 }
@@ -328,7 +357,8 @@ pub struct SetDependenciesArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkTicketArgs {
-    /// The job to attach a tracker ticket to.
+    /// The job to attach a tracker ticket to. A job id like "job-42", or the job's issue as "#928"
+    /// or "owner/repo#928".
     pub job: String,
     /// Which tracker the ticket lives in: "jira" or "github".
     pub tracker: Tracker,
@@ -704,7 +734,8 @@ impl Factory {
         let Some(key) = args.idempotency_key else {
             self.charge(&mut tx, &caller, "add_job").await?;
             let repo = repo_for_write(&mut tx, &team, args.repo, args.remote, Hold::Shared).await?;
-            ensure_jobs_visible(&mut tx, &team, &ids(args.depends_on.clone())).await?;
+            let depends_on = job_refs(&mut tx, &team, &args.depends_on).await?;
+            ensure_jobs_visible(&mut tx, &team, &depends_on).await?;
             let job = tx
                 .add_job(NewJob {
                     repo_id: repo.id,
@@ -713,7 +744,7 @@ impl Factory {
                     ticket_ref: args.ticket_ref,
                     agent_type: args.agent_type,
                     metadata: args.metadata,
-                    depends_on: ids(args.depends_on),
+                    depends_on,
                     created_by: Some(caller.user_id),
                     ..Default::default()
                 })
@@ -728,7 +759,10 @@ impl Factory {
         // un-charge after the fact — see Factory::charge's third exception),
         // which needs `repo.id` to build the payload to check.
         let repo = repo_for_write(&mut tx, &team, args.repo, args.remote, Hold::Shared).await?;
-        ensure_jobs_visible(&mut tx, &team, &ids(args.depends_on.clone())).await?;
+        // Resolved before the fingerprint is taken, so a replay that spells a
+        // dependency as its issue once and as its id the next still replays.
+        let depends_on = job_refs(&mut tx, &team, &args.depends_on).await?;
+        ensure_jobs_visible(&mut tx, &team, &depends_on).await?;
         let new_job = NewJob {
             repo_id: repo.id,
             title: args.title,
@@ -736,7 +770,7 @@ impl Factory {
             ticket_ref: args.ticket_ref,
             agent_type: args.agent_type,
             metadata: args.metadata,
-            depends_on: ids(args.depends_on),
+            depends_on,
             created_by: Some(caller.user_id),
             idempotency_key: Some(key),
             ..Default::default()
@@ -774,8 +808,12 @@ impl Factory {
 
     #[tool(
         name = "get_job",
-        description = "Fetch one job by id, with its full description, metadata, status and who \
-                       claimed it."
+        description = "Fetch one job, with its full description, metadata, status and who \
+                       claimed it. Name it by id (\"job-42\") or by its issue (\"#928\" or \
+                       \"owner/repo#928\"), as every tool that takes a job accepts. An issue \
+                       more than one job you can see carries is refused with \
+                       ambiguous_ticket_ref, listing their ids; one no job carries is \
+                       job_not_found."
     )]
     pub async fn get_job(
         &self,
@@ -788,7 +826,8 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "get_job").await?;
-        let job = visible_job(&mut tx, &team, &JobId::from(args.job)).await?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let job = visible_job(&mut tx, &team, &id).await?;
         tx.commit().await.mcp()?;
 
         Ok(Json(out::JobOut { job }))
@@ -797,8 +836,10 @@ impl Factory {
     #[tool(
         name = "list_jobs",
         description = "List jobs, optionally filtered by status, repository, whether you queued \
-                       them, or agentType. agentType is a routing hint for a mixed fleet, not \
-                       access control: passing it also returns jobs with no agentType set, since \
+                       them, agentType, or ticket. ticket is an issue (\"#928\" or \
+                       \"owner/repo#928\") and returns every job linked to it, which is what to \
+                       call when an issue reference was refused as ambiguous_ticket_ref. \
+                       agentType is a routing hint for a mixed fleet, not access control: passing it also returns jobs with no agentType set, since \
                        unrouted work is anyone's to take. To find work you can actually take, \
                        prefer `ready` — this returns jobs regardless of whether their \
                        dependencies are satisfied."
@@ -819,6 +860,7 @@ impl Factory {
             .map(str::parse::<Status>)
             .transpose()
             .mcp()?;
+        let ticket = ticket_filter(args.ticket.as_deref()).mcp()?;
 
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
@@ -831,6 +873,7 @@ impl Factory {
                 visible_teams: team.restriction(),
                 created_by: args.mine.then_some(caller.user_id),
                 agent_type: args.agent_type,
+                ticket,
                 limit: args.limit,
                 ..Default::default()
             })
@@ -859,10 +902,11 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "update_job").await?;
-        ensure_job_visible(&mut tx, &team, &JobId::from(args.job.clone())).await?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .update_job(
-                &JobId::from(args.job),
+                &id,
                 args.title.as_deref(),
                 args.description.as_deref(),
                 args.agent_type.as_deref(),
@@ -888,10 +932,10 @@ impl Factory {
         let caller = self.caller(&parts)?;
         caller.require_scope(scope::JOBS_WRITE).mcp()?;
 
-        let id = JobId::from(args.job);
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "delete_job").await?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         // Deleting cascades to whatever depends on this job. If that includes
         // work the caller cannot see, it is not theirs to change.
@@ -939,14 +983,10 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "claim_jobs").await?;
-        ensure_jobs_visible(&mut tx, &team, &ids(args.jobs.clone())).await?;
+        let ids = job_refs(&mut tx, &team, &args.jobs).await?;
+        ensure_jobs_visible(&mut tx, &team, &ids).await?;
         let jobs = tx
-            .claim_jobs(
-                &ids(args.jobs),
-                caller.user_id,
-                args.agent.as_deref(),
-                args.ttl,
-            )
+            .claim_jobs(&ids, caller.user_id, args.agent.as_deref(), args.ttl)
             .await
             .mcp()?;
         tx.commit().await.mcp()?;
@@ -987,14 +1027,10 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "renew_claim").await?;
-        ensure_job_visible(&mut tx, &team, &JobId::from(args.job.clone())).await?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
-            .renew_claim(
-                &JobId::from(args.job),
-                caller.user_id,
-                args.ttl,
-                args.expected_attempts,
-            )
+            .renew_claim(&id, caller.user_id, args.ttl, args.expected_attempts)
             .await
             .mcp()?;
         tx.commit().await.mcp()?;
@@ -1029,10 +1065,11 @@ impl Factory {
         let warmed = self.meter().warm(caller.org_id).await;
         let mut tx = self.tx(&caller).await?;
         self.charge_completion(&mut tx, &caller, &warmed).await?;
-        ensure_job_visible(&mut tx, &team, &JobId::from(args.job.clone())).await?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .complete_job(
-                &JobId::from(args.job),
+                &id,
                 caller.user_id,
                 args.result.as_deref(),
                 args.expected_attempts,
@@ -1075,10 +1112,11 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "fail_job").await?;
-        ensure_job_visible(&mut tx, &team, &JobId::from(args.job.clone())).await?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .fail_job(
-                &JobId::from(args.job),
+                &id,
                 caller.user_id,
                 args.error.as_deref(),
                 args.expected_attempts,
@@ -1123,8 +1161,8 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "request_cancel").await?;
-        ensure_job_visible(&mut tx, &team, &JobId::from(args.job.clone())).await?;
-        let id = JobId::from(args.job);
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .request_cancel(&id, caller.user_id, args.reason.as_deref())
             .await
@@ -1201,10 +1239,11 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "cancel_job").await?;
-        ensure_job_visible(&mut tx, &team, &JobId::from(args.job.clone())).await?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .cancel_job(
-                &JobId::from(args.job),
+                &id,
                 caller.user_id,
                 args.note.as_deref(),
                 args.expected_attempts,
@@ -1255,8 +1294,9 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "activate_job").await?;
-        ensure_job_visible(&mut tx, &team, &JobId::from(args.job.clone())).await?;
-        let job = tx.activate_job(&JobId::from(args.job)).await.mcp()?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        ensure_job_visible(&mut tx, &team, &id).await?;
+        let job = tx.activate_job(&id).await.mcp()?;
         tx.commit().await.mcp()?;
 
         Ok(Json(out::JobOut { job }))
@@ -1279,8 +1319,9 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "repend_job").await?;
-        ensure_job_visible(&mut tx, &team, &JobId::from(args.job.clone())).await?;
-        let job = tx.repend_job(&JobId::from(args.job)).await.mcp()?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        ensure_job_visible(&mut tx, &team, &id).await?;
+        let job = tx.repend_job(&id).await.mcp()?;
         tx.commit().await.mcp()?;
 
         Ok(Json(out::JobOut { job }))
@@ -1301,23 +1342,20 @@ impl Factory {
         let caller = self.caller(&parts)?;
         caller.require_scope(scope::JOBS_WRITE).mcp()?;
 
-        let job = JobId::from(args.job);
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "set_dependencies").await?;
+        let job = job_ref(&mut tx, &team, &args.job).await?;
+        let add = job_refs(&mut tx, &team, &args.add).await?;
+        let remove = job_refs(&mut tx, &team, &args.remove).await?;
         ensure_jobs_visible(
             &mut tx,
             &team,
-            &[
-                vec![job.clone()],
-                ids(args.add.clone()),
-                ids(args.remove.clone()),
-            ]
-            .concat(),
+            &[vec![job.clone()], add.clone(), remove.clone()].concat(),
         )
         .await?;
         let deps = tx
-            .set_dependencies(&job, &ids(args.add), &ids(args.remove))
+            .set_dependencies(&job, &add, &remove)
             .await
             .map_err(|e| redact_foreign_ids(&team, e))
             .mcp()?;
@@ -1431,9 +1469,10 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "link_ticket").await?;
-        ensure_job_visible(&mut tx, &team, &JobId::from(args.job.clone())).await?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
-            .link_ticket(&JobId::from(args.job), args.tracker, &args.ticket_ref)
+            .link_ticket(&id, args.tracker, &args.ticket_ref)
             .await
             .map_err(|e| redact_foreign_ids(&team, e))
             .mcp()?;
@@ -1475,7 +1514,8 @@ impl Factory {
         // refuse it for billing.
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
-        let job = visible_job(&mut tx, &team, &JobId::from(args.job)).await?;
+        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let job = visible_job(&mut tx, &team, &id).await?;
         tx.commit().await.mcp()?;
 
         let Some(tracker) = job.tracker else {
