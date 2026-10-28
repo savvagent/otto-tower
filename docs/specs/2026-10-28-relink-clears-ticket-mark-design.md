@@ -4,6 +4,8 @@
 > `ticket_changed_at` when it points the job at a different ticket, so the old ticket's drift mark
 > neither keeps the job `ticketStale` nor makes the comment guard drop the new ticket's comments.
 > No tool, field, route, migration or env var changes. Closes savvagent/otto-factory#264.
+> Review added two `of-core` tests beyond the three listed under Testing:
+> `relinking_to_another_tracker_with_the_same_ref_clears_the_mark` and `a_refused_relink_keeps_the_mark`.
 >
 > **Follows:** `docs/specs/2026-10-28-late-comment-stale-mark-design.md` (Risks: "A relinked job
 > keeps the old ticket's `ticket_changed_at`") and `docs/specs/2026-10-28-jobs-by-issue-design.md`
