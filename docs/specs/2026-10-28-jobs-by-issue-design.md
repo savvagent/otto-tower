@@ -270,7 +270,9 @@ dependencies in place, and a retry is idempotent (`already`).
 
 ### Output
 
-`sync_ticket` returns `SyncTicketOut { job: Job, blockers: Vec<BlockerOutcome> }`, where
+`sync_ticket` returns `SyncTicketOut { job: Job, blockers: Vec<BlockerOutcome>, blockersImported: bool }`
+(`blockersImported` is false for a JIRA job and for a token without `jobs:write`, so an empty
+`blockers` is never mistaken for "no Blocked by lines"; added in review), where
 `BlockerOutcome { ticketRef: String, outcome: "added"|"already"|"no_job"|"ambiguous"|"cycle", jobs: Vec<JobId> }`
 (`jobs`: the one id for added/already/cycle, the candidates for ambiguous, empty for no_job).
 Adding a field to the result object is additive: `out::DependenciesOut` already has two.
