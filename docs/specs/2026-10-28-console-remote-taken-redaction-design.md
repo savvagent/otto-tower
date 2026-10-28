@@ -1,7 +1,11 @@
 # Console `remote_taken` redaction design
 
-> **Status:** DRAFT — the console's repo writes withhold the owning repo's slug from a
-> team-limited caller, through the same redaction the MCP tools use, moved into `of-core`.
+> **Status:** IMPLEMENTED (PR #269, 2026-10-28; merged as bd2d222). The console's repo writes
+> withhold the owning repo's slug from a team-limited caller, through the same redaction the MCP
+> tools use, moved into `of-core`. Review added `update_repo` resolving its target through the
+> caller's scope, held for update (`resolve_repo_visible_held(.., Hold::ForUpdate)`), and pinned the
+> member arm of `a_taken_remote_never_names_a_hidden_repo` to exactly `403`. No follow-up issues.
+> The redacted branch is not driven over HTTP while the admin gate stands (see Assumptions).
 
 > **Implements:** savvagent/otto-factory#251 (follow-up from PR #249, security review note I1).
 
@@ -124,5 +128,7 @@ The console's repo writes apply the same hidden-repo redaction as MCP's, from on
 
 ## Risks & open questions
 
-- Low risk: a pure function moved between crates plus two `map_err`s. The main risk is wording
-  drift between surfaces, removed by having one definition.
+- Low risk: a pure function moved between crates, two `map_err`s, and (added in review)
+  `update_repo` resolving its target through the caller's scope with the row held
+  (`resolve_repo_visible_held(.., Hold::ForUpdate)`) instead of an unscoped lookup. The main risk
+  is wording drift between surfaces, removed by having one definition.

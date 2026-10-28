@@ -11,7 +11,9 @@ today, so this is defence in depth, not a live leak.
 
 ## Status — 2026-10-28
 
-🚧 Implemented on `web/redact-remote-taken`; in review.
+✅ Shipped in PR #269 (squash bd2d222). Review added `update_repo` resolving its target with
+`resolve_repo_visible_held(.., &scope, Hold::ForUpdate)` and pinned the member's refusal in
+`a_taken_remote_never_names_a_hidden_repo` to exactly `403`; no follow-up issues.
 
 ## Global Constraints
 
