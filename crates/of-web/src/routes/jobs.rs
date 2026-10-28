@@ -143,6 +143,7 @@ pub async fn list_jobs(
             visible_teams: scope.restriction(),
             created_by: q.mine.then_some(ctx.user.id),
             agent_type: None,
+            ticket: None,
             limit: q.limit,
         })
         .await?;

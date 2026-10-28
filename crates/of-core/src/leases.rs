@@ -47,6 +47,12 @@ pub struct Lease {
     #[serde(serialize_with = "crate::agent_label::serialize_stored")]
     pub holder_label: Option<String>,
     pub job_id: Option<String>,
+    /// The issue the lease's job is linked to (its `ticketRef`, such as
+    /// `acme/api#928`), so "who is working on #928?" needs no second lookup.
+    /// Filled in only by `list_leases`; `None` when the lease names no job,
+    /// the job has no issue, or the job is one the caller cannot see.
+    #[sqlx(default)]
+    pub job_ticket_ref: Option<String>,
     pub acquired_at: chrono::DateTime<chrono::Utc>,
     pub renewed_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
@@ -55,6 +61,14 @@ pub struct Lease {
 
 const LEASE_COLS: &str = "id, org_id, repo_id, resource, holder_user_id, holder_label, job_id, \
                           acquired_at, renewed_at, expires_at, released_at";
+
+/// [`LEASE_COLS`] qualified for `list_leases`'s join with `jobs j`. A separate
+/// list, not an `l.` prefix on the shared one: that is also spliced into
+/// `RETURNING` and into unaliased `SELECT`s, where a qualifier fails only at
+/// runtime.
+const LEASE_COLS_L: &str = "l.id, l.org_id, l.repo_id, l.resource, l.holder_user_id, \
+                            l.holder_label, l.job_id, l.acquired_at, l.renewed_at, \
+                            l.expires_at, l.released_at, j.ticket_ref AS job_ticket_ref";
 
 /// Extension methods on [`Tx`] for this module's domain (see the crate docs for why
 /// these are extension traits rather than inherent methods).
@@ -251,10 +265,11 @@ impl LeasesExt for Tx<'_> {
     async fn list_leases(&mut self, repo_id: Option<RepoId>) -> Result<Vec<Lease>> {
         let org = self.org();
         let leases = sqlx::query_as(&format!(
-            "SELECT {LEASE_COLS} FROM repo_leases \
-             WHERE org_id = $1 AND released_at IS NULL AND expires_at > now() \
-               AND ($2::uuid IS NULL OR repo_id = $2) \
-             ORDER BY acquired_at"
+            "SELECT {LEASE_COLS_L} FROM repo_leases l \
+             LEFT JOIN jobs j ON j.org_id = l.org_id AND j.id = l.job_id \
+             WHERE l.org_id = $1 AND l.released_at IS NULL AND l.expires_at > now() \
+               AND ($2::uuid IS NULL OR l.repo_id = $2) \
+             ORDER BY l.acquired_at"
         ))
         .bind(org)
         .bind(repo_id)
@@ -264,8 +279,9 @@ impl LeasesExt for Tx<'_> {
     }
 }
 
-/// Blank the `job_id` of leases whose job `scope` cannot see: a lease on a
-/// visible repo can still name a job of a team the caller is not on.
+/// Blank the `job_id` (and with it `job_ticket_ref`) of leases whose job
+/// `scope` cannot see: a lease on a visible repo can still name a job of a team
+/// the caller is not on, and that job's issue is withheld exactly as its id is.
 pub async fn hide_unseen_jobs(
     tx: &mut Tx<'_>,
     leases: &mut [Lease],
@@ -291,6 +307,7 @@ pub async fn hide_unseen_jobs(
     for l in leases {
         if l.job_id.as_ref().is_some_and(|j| !seen.contains(j)) {
             l.job_id = None;
+            l.job_ticket_ref = None;
         }
     }
     Ok(())

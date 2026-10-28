@@ -775,3 +775,411 @@ async fn close_from_ticket_with_no_revision_preserves_the_existing_one(pool: PgP
         Some("2026-09-03T12:00:00Z")
     );
 }
+
+// ------------------------------------------------- issue references as job ids
+
+use of_core::ids::{JobId, RepoId};
+use of_core::jobs::{JobFilter, NewJob};
+use of_core::leases::LeasesExt;
+use of_core::teams::TeamScope;
+use of_core::ticket_ref::{JobRef, TicketQuery};
+use otto_tenant::ids::TeamId;
+
+/// A job in `repo` linked (by `add_job`, no tracker) to `ticket`, in a
+/// transaction of its own so successive jobs get distinct `created_at`s.
+async fn ticketed(
+    db: &otto_tenant::Db,
+    t: &common::Tenant,
+    repo: RepoId,
+    title: &str,
+    ticket: &str,
+) -> JobId {
+    let mut tx = db.begin(t.org).await.unwrap();
+    let j = tx
+        .add_job(NewJob {
+            repo_id: repo,
+            ticket_ref: Some(ticket.into()),
+            ..job(t, title)
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    j.id
+}
+
+/// A second repo in `t`'s org, scoped to `team` when one is given. The team is
+/// written directly: verifying it would need the platform, and visibility only
+/// reads the column.
+async fn second_repo(
+    db: &otto_tenant::Db,
+    t: &common::Tenant,
+    slug: &str,
+    team: Option<TeamId>,
+) -> RepoId {
+    let mut tx = db.begin(t.org).await.unwrap();
+    let repo = tx
+        .register_repo(NewRepo {
+            slug: slug.into(),
+            remotes: vec![format!("git@github.com:acme/{slug}.git")],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    if let Some(team) = team {
+        sqlx::query("UPDATE repos SET team_id = $2 WHERE org_id = $1 AND id = $3")
+            .bind(t.org)
+            .bind(team)
+            .bind(repo.id)
+            .execute(tx.conn())
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+    repo.id
+}
+
+fn query(raw: &str) -> TicketQuery {
+    match JobRef::parse(raw).unwrap() {
+        JobRef::Ticket(q) => q,
+        JobRef::Id(id) => panic!("{raw:?} parsed as {id}"),
+    }
+}
+
+#[sqlx::test]
+async fn resolve_job_ref_matches_short_full_any_case_and_leading_zeros(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let id = ticketed(&db, &t, t.repo, "the issue", "acme/api#928").await;
+    // Shares the digits but not the number: must not make `#928` ambiguous.
+    ticketed(&db, &t, t.repo, "a longer number", "acme/api#1928").await;
+    // A bare `#N`, as a caller could type it into add_job.
+    let bare = ticketed(&db, &t, t.repo, "bare", "#77").await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    for raw in ["#928", " #928 ", "#0928", "acme/api#928", "ACME/Api#928"] {
+        assert_eq!(
+            tx.resolve_job_ref(raw, &TeamScope::All).await.unwrap(),
+            id,
+            "{raw:?}"
+        );
+    }
+    assert_eq!(
+        tx.resolve_job_ref("#77", &TeamScope::All).await.unwrap(),
+        bare
+    );
+    let err = tx.resolve_job_ref("#x", &TeamScope::All).await.unwrap_err();
+    assert_eq!(err.code(), "invalid_argument");
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test]
+async fn resolve_job_ref_with_no_match_is_job_not_found(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    ticketed(&db, &t, t.repo, "other", "acme/api#1").await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    for raw in ["#928", "acme/api#928", "acme/web#1"] {
+        let err = tx.resolve_job_ref(raw, &TeamScope::All).await.unwrap_err();
+        assert!(matches!(err, Error::NoJobForTicket(_)), "{raw:?}: {err:?}");
+        assert_eq!(err.code(), "job_not_found");
+    }
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test]
+async fn resolve_job_ref_with_two_matches_is_ambiguous_naming_both(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let web = second_repo(&db, &t, "web", None).await;
+    let older = ticketed(&db, &t, t.repo, "api", "acme/api#5").await;
+    let newer = ticketed(&db, &t, web, "web", "acme/web#5").await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let err = tx.resolve_job_ref("#5", &TeamScope::All).await.unwrap_err();
+    assert_eq!(err.code(), "ambiguous_ticket_ref");
+    assert!(!err.retriable());
+    match &err {
+        Error::AmbiguousTicket { jobs, more, .. } => {
+            assert_eq!(jobs, &vec![newer.clone(), older.clone()]);
+            assert!(!more);
+        }
+        other => panic!("{other:?}"),
+    }
+    let msg = err.to_string();
+    assert!(
+        msg.contains(newer.as_str()) && msg.contains(older.as_str()),
+        "{msg}"
+    );
+
+    // The full form picks one.
+    assert_eq!(
+        tx.resolve_job_ref("acme/api#5", &TeamScope::All)
+            .await
+            .unwrap(),
+        older
+    );
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test]
+async fn resolve_job_ref_lists_ten_and_says_more(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let mut tx = db.begin(t.org).await.unwrap();
+    for i in 0..12 {
+        tx.add_job(NewJob {
+            ticket_ref: Some("acme/api#5".into()),
+            ..job(&t, &format!("try {i}"))
+        })
+        .await
+        .unwrap();
+    }
+    match tx.resolve_job_ref("#5", &TeamScope::All).await {
+        Err(Error::AmbiguousTicket { jobs, more, .. }) => {
+            assert_eq!(jobs.len(), 10);
+            assert!(more);
+            // Same transaction, same `created_at`: the number breaks the tie.
+            assert_eq!(jobs[0].as_str(), "job-12");
+            assert_eq!(jobs[9].as_str(), "job-3");
+        }
+        other => panic!("{other:?}"),
+    }
+    tx.commit().await.unwrap();
+}
+
+/// A job id is not looked up here, so whatever the caller does next raises the
+/// error it always did for an unknown id.
+#[sqlx::test]
+async fn resolve_job_ref_passes_a_job_id_through_untouched(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let id = tx.resolve_job_ref("job-7", &TeamScope::All).await.unwrap();
+    assert_eq!(id, JobId::from("job-7"));
+    assert!(matches!(tx.get_job(&id).await, Err(Error::JobNotFound(_))));
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test]
+async fn resolve_job_refs_resolves_in_order_and_stops_at_the_first_error(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let a = ticketed(&db, &t, t.repo, "a", "acme/api#1").await;
+    let b = ticketed(&db, &t, t.repo, "b", "acme/api#2").await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let got = tx
+        .resolve_job_refs(
+            &["#2".into(), "job-1".into(), "acme/api#1".into()],
+            &TeamScope::All,
+        )
+        .await
+        .unwrap();
+    assert_eq!(got, vec![b, a.clone(), a]);
+    let err = tx
+        .resolve_job_refs(&["#1".into(), "#3".into(), "#".into()], &TeamScope::All)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "job_not_found", "{err}");
+    tx.commit().await.unwrap();
+}
+
+/// Org B's job carries the same issue; org A must neither resolve to it nor
+/// count it toward ambiguity. Guard 1 (the `org_id` predicate) and guard 2
+/// (RLS) each stop it on their own.
+#[sqlx::test]
+async fn resolve_job_ref_never_crosses_orgs(pool: PgPool) {
+    let db = db(pool);
+    let a = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let b = tenant(&db, "globex", "git@github.com:globex/api.git").await;
+    // Org B's job numbers run ahead, so its id cannot coincide with A's.
+    ticketed(&db, &b, b.repo, "padding", "globex/api#1").await;
+    let theirs = ticketed(&db, &b, b.repo, "theirs", "acme/api#5").await;
+
+    let mut tx = db.begin(a.org).await.unwrap();
+    for raw in ["#5", "acme/api#5"] {
+        let err = tx.resolve_job_ref(raw, &TeamScope::All).await.unwrap_err();
+        assert_eq!(err.code(), "job_not_found", "{raw:?}: {err}");
+    }
+    tx.commit().await.unwrap();
+
+    let mine = ticketed(&db, &a, a.repo, "mine", "acme/api#5").await;
+    assert_ne!(mine, theirs);
+    let mut tx = db.begin(a.org).await.unwrap();
+    for raw in ["#5", "acme/api#5"] {
+        assert_eq!(
+            tx.resolve_job_ref(raw, &TeamScope::All).await.unwrap(),
+            mine,
+            "{raw:?}"
+        );
+    }
+    let listed = tx
+        .list_jobs(&JobFilter {
+            ticket: Some(query("#5")),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.into_iter().map(|j| j.id).collect::<Vec<_>>(),
+        vec![mine]
+    );
+    tx.commit().await.unwrap();
+}
+
+/// A job on a repo of a team the caller is not on is neither resolved nor
+/// counted: its existence is not revealed by an ambiguity it would cause.
+#[sqlx::test]
+async fn resolve_job_ref_ignores_jobs_the_scope_cannot_see(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let team = TeamId::from(uuid::Uuid::new_v4());
+    let hidden_repo = second_repo(&db, &t, "web", Some(team)).await;
+    let open = ticketed(&db, &t, t.repo, "open", "acme/api#5").await;
+    let hidden = ticketed(&db, &t, hidden_repo, "hidden", "acme/web#5").await;
+
+    let outsider = TeamScope::Teams(Default::default());
+    let insider = TeamScope::Teams([team].into_iter().collect());
+    let mut tx = db.begin(t.org).await.unwrap();
+    assert_eq!(tx.resolve_job_ref("#5", &outsider).await.unwrap(), open);
+    let err = tx
+        .resolve_job_ref("acme/web#5", &outsider)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "job_not_found");
+    assert!(!err.to_string().contains(hidden.as_str()), "{err}");
+
+    for scope in [&insider, &TeamScope::All] {
+        let err = tx.resolve_job_ref("#5", scope).await.unwrap_err();
+        assert_eq!(err.code(), "ambiguous_ticket_ref", "{scope:?}");
+    }
+    assert_eq!(
+        tx.resolve_job_ref("acme/web#5", &insider).await.unwrap(),
+        hidden
+    );
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test]
+async fn list_jobs_by_ticket_returns_that_issues_visible_jobs_newest_first(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let team = TeamId::from(uuid::Uuid::new_v4());
+    let web = second_repo(&db, &t, "web", None).await;
+    let hidden_repo = second_repo(&db, &t, "ops", Some(team)).await;
+    let first = ticketed(&db, &t, t.repo, "first try", "acme/api#5").await;
+    ticketed(&db, &t, t.repo, "another issue", "acme/api#6").await;
+    let second = ticketed(&db, &t, t.repo, "second try", "Acme/API#5").await;
+    let web_job = ticketed(&db, &t, web, "web", "acme/web#5").await;
+    let hidden = ticketed(&db, &t, hidden_repo, "hidden", "acme/ops#5").await;
+    ticketed(&db, &t, t.repo, "longer number", "acme/api#15").await;
+
+    let ids = |jobs: Vec<of_core::jobs::Job>| jobs.into_iter().map(|j| j.id).collect::<Vec<_>>();
+    let mut tx = db.begin(t.org).await.unwrap();
+    let all = tx
+        .list_jobs(&JobFilter {
+            ticket: Some(query("#5")),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        ids(all),
+        vec![hidden, web_job.clone(), second.clone(), first.clone()]
+    );
+
+    let visible = tx
+        .list_jobs(&JobFilter {
+            ticket: Some(query("#5")),
+            visible_teams: Some(vec![]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(ids(visible), vec![web_job, second.clone(), first.clone()]);
+
+    let full = tx
+        .list_jobs(&JobFilter {
+            ticket: Some(query("acme/api#5")),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(ids(full), vec![second, first]);
+
+    // No ticket filter: unchanged, every job.
+    let unfiltered = tx.list_jobs(&JobFilter::default()).await.unwrap();
+    assert_eq!(unfiltered.len(), 6);
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test]
+async fn list_leases_carries_the_jobs_ticket_ref(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let team = TeamId::from(uuid::Uuid::new_v4());
+    let linked = ticketed(&db, &t, t.repo, "linked", "acme/api#928").await;
+    let mut tx = db.begin(t.org).await.unwrap();
+    // A job on the org-wide repo, but of a team: hidden from an outsider.
+    sqlx::query("UPDATE jobs SET team_id = $2 WHERE org_id = $1 AND id = $3")
+        .bind(t.org)
+        .bind(team)
+        .bind(&linked)
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    let unlinked = tx.add_job(job(&t, "unlinked")).await.unwrap().id;
+    let with_job = tx
+        .acquire_lease(t.repo, "branch:a", t.user, None, Some(&linked), None)
+        .await
+        .unwrap();
+    // RETURNING carries no join: the column defaults.
+    assert_eq!(with_job.job_ticket_ref, None);
+    tx.acquire_lease(t.repo, "branch:b", t.user, None, Some(&unlinked), None)
+        .await
+        .unwrap();
+    tx.acquire_lease(t.repo, "branch:c", t.user, None, None, None)
+        .await
+        .unwrap();
+
+    let leases = tx.list_leases(Some(t.repo)).await.unwrap();
+    let by_resource = |leases: &[of_core::leases::Lease], r: &str| {
+        let l = leases.iter().find(|l| l.resource == r).unwrap();
+        (l.job_id.clone(), l.job_ticket_ref.clone())
+    };
+    assert_eq!(
+        by_resource(&leases, "branch:a"),
+        (Some(linked.0.clone()), Some("acme/api#928".into()))
+    );
+    assert_eq!(
+        by_resource(&leases, "branch:b"),
+        (Some(unlinked.0.clone()), None)
+    );
+    assert_eq!(by_resource(&leases, "branch:c"), (None, None));
+    let a = leases.iter().find(|l| l.resource == "branch:a").unwrap();
+    let json = serde_json::to_value(a).unwrap();
+    assert_eq!(json["jobTicketRef"], "acme/api#928");
+
+    let mut hidden = leases.clone();
+    of_core::leases::hide_unseen_jobs(&mut tx, &mut hidden, &TeamScope::Teams(Default::default()))
+        .await
+        .unwrap();
+    assert_eq!(by_resource(&hidden, "branch:a"), (None, None));
+    assert_eq!(
+        by_resource(&hidden, "branch:b"),
+        (Some(unlinked.0.clone()), None)
+    );
+
+    let mut shown = leases.clone();
+    of_core::leases::hide_unseen_jobs(
+        &mut tx,
+        &mut shown,
+        &TeamScope::Teams([team].into_iter().collect()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(shown, leases);
+    tx.commit().await.unwrap();
+}

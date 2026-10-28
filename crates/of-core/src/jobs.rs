@@ -12,6 +12,7 @@ use crate::error::{Error, Result};
 use crate::ids::{JobId, RepoId};
 use crate::repos::ReposExt;
 use crate::teams::{TeamScope, VerifiedTeam};
+use crate::ticket_ref::{ticket_match_sql, JobRef, TicketQuery};
 use otto_tenant::ids::{OrgId, TeamId, UserId};
 use otto_tenant::Tx;
 use serde::{Deserialize, Serialize};
@@ -230,6 +231,9 @@ pub struct JobFilter {
     /// unrouted job is work anyone may take. Never validated against a list —
     /// same reasoning as `agent_type` itself.
     pub agent_type: Option<String>,
+    /// Only jobs whose `ticket_ref` matches this issue (see
+    /// [`crate::ticket_ref`]): what to list when a reference was ambiguous.
+    pub ticket: Option<TicketQuery>,
     pub limit: Option<i64>,
 }
 
@@ -401,6 +405,29 @@ pub trait JobsExt {
         &mut self,
         f: &JobFilter,
     ) -> impl std::future::Future<Output = Result<Vec<Job>>> + Send;
+
+    /// Turn a job argument into a job id: a job id as itself, an issue
+    /// reference (`#928`, `owner/repo#928`) as the one job `scope` can see that
+    /// carries it.
+    ///
+    /// A job id costs no query and is returned even if no such job exists, so
+    /// the caller's own lookup raises exactly the error it always did. An issue
+    /// reference no visible job carries is [`Error::NoJobForTicket`]; one that
+    /// several carry is [`Error::AmbiguousTicket`], listing only ids `scope`
+    /// can see, so a hidden job neither makes a reference ambiguous nor leaks.
+    fn resolve_job_ref(
+        &mut self,
+        raw: &str,
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<JobId>> + Send;
+
+    /// [`Self::resolve_job_ref`] for each of `raw`, in order, stopping at the
+    /// first error.
+    fn resolve_job_refs(
+        &mut self,
+        raw: &[String],
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<Vec<JobId>>> + Send;
 
     /// Claim one or more pending jobs atomically.
     ///
@@ -1134,9 +1161,11 @@ impl JobsExt for Tx<'_> {
                AND ($5::uuid IS NULL OR created_by = $5) \
                AND ($6::text IS NULL OR agent_type = $6 OR agent_type IS NULL) \
                AND {} \
+               AND ($9::text IS NULL OR {}) \
              ORDER BY created_at DESC \
              LIMIT $7",
-            job_visible_sql(8)
+            job_visible_sql(8),
+            ticket_match_sql(9, 10)
         ))
         .bind(org)
         .bind(f.status)
@@ -1150,9 +1179,59 @@ impl JobsExt for Tx<'_> {
                 .as_ref()
                 .map(|v| v.iter().map(|t| t.as_uuid()).collect::<Vec<uuid::Uuid>>()),
         )
+        .bind(f.ticket.as_ref().map(TicketQuery::exact))
+        .bind(f.ticket.as_ref().and_then(TicketQuery::suffix_like))
         .fetch_all(self.conn())
         .await?;
         Ok(jobs)
+    }
+
+    async fn resolve_job_ref(&mut self, raw: &str, scope: &TeamScope) -> Result<JobId> {
+        let ticket = match JobRef::parse(raw)? {
+            JobRef::Id(id) => return Ok(id),
+            JobRef::Ticket(t) => t,
+        };
+        let org = self.org();
+        let teams = scope
+            .restriction()
+            .map(|v| v.iter().map(|t| t.as_uuid()).collect::<Vec<uuid::Uuid>>());
+        // Eleven rows: up to ten to name, and one more only to say "and more".
+        // Newest first, with `job-N`'s number breaking a tie between jobs made
+        // in one transaction (which share `created_at`).
+        let mut found: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT j.id FROM jobs j \
+             WHERE j.org_id = $1 AND {} AND {} \
+             ORDER BY j.created_at DESC, length(j.id) DESC, j.id DESC \
+             LIMIT 11",
+            ticket_match_sql(2, 3),
+            job_visible_sql(4)
+        ))
+        .bind(org)
+        .bind(ticket.exact())
+        .bind(ticket.suffix_like())
+        .bind(teams)
+        .fetch_all(self.conn())
+        .await?;
+        match found.len() {
+            0 => Err(Error::NoJobForTicket(ticket.exact())),
+            1 => Ok(JobId(found.remove(0))),
+            n => {
+                found.truncate(10);
+                Err(Error::AmbiguousTicket {
+                    ticket: ticket.exact(),
+                    jobs: found.into_iter().map(JobId).collect(),
+                    more: n > 10,
+                })
+            }
+        }
+    }
+
+    async fn resolve_job_refs(&mut self, raw: &[String], scope: &TeamScope) -> Result<Vec<JobId>> {
+        let mut ids = Vec::with_capacity(raw.len());
+        for r in raw {
+            ids.push(self.resolve_job_ref(r, scope).await?);
+        }
+        Ok(ids)
     }
 
     async fn claim_jobs(
