@@ -284,7 +284,8 @@ async fn apply(
             // comments could not be told apart from a person's and every
             // claim or completion note would flag its own job.
             let applies = event.kind == of_trackers::webhook::WebhookEventKind::Issue
-                || provider == Provider::Github;
+                || (provider == Provider::Github
+                    && event.kind == of_trackers::webhook::WebhookEventKind::IssueComment);
             if applies {
                 if let Some(binding) = binding.as_ref() {
                     if binding.connection_id.is_some() {
