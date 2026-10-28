@@ -29,8 +29,9 @@ pub enum InboundDecision {
     /// Someone other than a bot commented on (or edited or deleted a comment
     /// on) the issue of a live job: mark the job's description as possibly out
     /// of date (`note_ticket_changed(at)`) without rewriting it. GitHub only.
-    /// `at` is the issue's `updated_at`, already parsed, and always later than
-    /// the job's `ticket_changed_at`. It is deliberately not a revision to
+    /// `at` is the issue's `updated_at`, already parsed, and later than the
+    /// `ticket_changed_at` of the job as read (when it has one; a concurrent
+    /// delivery may have raised it since). It is deliberately not a revision to
     /// store: see the webhook route for why `Changed` leaves the job's
     /// `remote_revision` alone.
     Changed {
@@ -155,7 +156,9 @@ pub fn inbound_decision(
 /// comparing against it would drop that comment. The guard is instead
 /// `ticket_changed_at`, the newest foreign change already counted: a comment
 /// no later than it (a redelivery, or an older comment arriving after a newer
-/// one) has nothing to add. Whether a counted comment makes the job stale is
+/// one) has nothing to add, and neither has a second comment in the same
+/// second as one counted, since the mark already holds that time. Whether a
+/// counted comment makes the job stale is
 /// still decided against `described_at`, so one older than the job's last
 /// re-description does not.
 fn github_comment_decision(event: &WebhookEvent, job: &Job) -> InboundDecision {
@@ -163,11 +166,12 @@ fn github_comment_decision(event: &WebhookEvent, job: &Job) -> InboundDecision {
         return InboundDecision::NoOp;
     }
     // The bot filter is what keeps otto-tower's own write-back comment (a
-    // claim or completion note) from flagging its own job, now that no echo
-    // check runs ahead of a comment. It also ignores other apps' bots, which
-    // is the intent: a CI status comment is not a change to what the work is.
-    // It assumes write-backs are posted as the GitHub App (`GithubAppClient`
-    // authenticates as an installation), which they are.
+    // claim or completion note) from flagging its own job, since no echo check
+    // runs ahead of a comment. It also ignores other apps' bots, which is the
+    // intent: a CI status comment is not a change to what the work is. It
+    // assumes write-backs are posted as the GitHub App (`GithubAppClient`
+    // authenticates as an installation), which they are, and that GitHub
+    // sends the comment's `user.type`, which it does for every comment.
     let by_bot = event
         .issue
         .comment

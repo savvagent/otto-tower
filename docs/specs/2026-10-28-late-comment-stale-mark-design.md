@@ -149,3 +149,18 @@ are updated to match: no echo check runs ahead of a comment any more.
   could arrive late (an `edited` or `deleted` action on an old comment carries the issue's current
   `updated_at`, so this is only a delayed `created`). The `described_at`/`created_at` comparison
   keeps it from marking a job created after it. No new false positive beyond what #257 accepted.
+- **The bot filter is now the only guard against otto-tower's own comments** (added in review).
+  Before, a write-back comment whose webhook arrived after its `remote_revision` was stored was
+  also dropped by the echo check. `author_is_bot` is false when a payload has no `comment.user`
+  (#257 chose that default, and `webhook.rs` tests pin it). GitHub sends `user.type` on every
+  comment and App write-backs are `"Bot"`, so this is a hint-only risk: at worst a job is wrongly
+  marked stale. Identifying write-backs by the comment ids otto-tower posts would be a positive
+  check; not done here.
+- **A replayed signed comment delivery gets further than before** (added in review). GitHub's
+  signature carries no timestamp and deliveries are not deduplicated by `X-GitHub-Delivery`
+  (pre-existing, for issue events too). A replay can now set the mark where the echo check used
+  to drop it, but only once, since `ticket_changed_at` only moves forward. Follow-up: savvagent/otto-factory#265.
+- **A relinked job keeps the old ticket's `ticket_changed_at`** (added in review, pre-existing
+  from #257). `link_ticket` clears `remote_revision` but not `ticket_changed_at`, so the old
+  ticket's mark keeps the job stale, and now also drops new-ticket comments no later than it.
+  The visible `ticketStale` is the same as without the guard. Follow-up: savvagent/otto-factory#264.
