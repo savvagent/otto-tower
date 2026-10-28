@@ -1,10 +1,13 @@
 # GitHub webhook delivery dedupe design
 
-> **Status:** DRAFT — record every verified GitHub tracker-webhook event in a new tenant table,
-> keyed by the SHA-256 of its signed body, in the same transaction as its effects, and acknowledge a
-> repeat with `200` before `inbound_decision` runs. A body whose shape does not match its unsigned
-> `X-GitHub-Event` is rejected before it is recorded.
-> Swept after 30 days. Closes savvagent/otto-factory#265.
+> **Status:** IMPLEMENTED — shipped in PR #268 (squash bb7c0b3). Records every verified GitHub
+> tracker-webhook event in a new tenant table, keyed by the SHA-256 of its signed body, in the same
+> transaction as its effects, and acknowledges a repeat with `200` before `inbound_decision` runs.
+> A body whose shape does not match its unsigned `X-GitHub-Event` is rejected before it is recorded.
+> Swept after 30 days. Closes savvagent/otto-factory#265. Deferred review findings: the replay past
+> the retention window and installation moves are in savvagent/otto-factory#271; the pinned-only
+> insert policy, a positive event-shape check, JIRA replay and logging the repeat branch at `warn` are in
+> savvagent/otto-factory#273.
 >
 > **Follows:** `docs/specs/2026-10-28-late-comment-stale-mark-design.md` (PR #263), whose security
 > review found the gap (#259).
@@ -199,7 +202,8 @@ match a recorded delivery again).
   negative test — a pinned transaction as `otto_app` with deliberately unscoped SQL sees, deletes,
   and can forge none of another org's rows; `sweep` deletes only rows past the window, for two orgs,
   on a pool running as `otto_app` (the `housekeeping_deletes_where_row_level_security_applies`
-  shape); `org_deleted` purges the org's rows.
+  shape). The `org_deleted` purge is covered in `tests/platform_events.rs`
+  (`org_deleted_purges_that_org_and_only_that_org`).
 - `of-trackers`: `github_delivery_id` absent / valid / oversized / non-ASCII; `github_delivery`'s
   digest is the body's SHA-256, unchanged by the event or delivery-id headers; a comment body under
   `issues` and an issue body under `issue_comment` are both rejected.
@@ -249,11 +253,11 @@ match a recorded delivery again).
   by the monotonic guards (`remote_revision` for issues; `ticket_changed_at` for comments, once per
   job); if the job is gone, a replayed `opened` or `labeled` event creates it again. Closing this
   needs an acceptance window on the payload's own timestamp no longer than the retention window;
-  left to a follow-up issue.
+  left to savvagent/otto-factory#271.
 - **Installation moved to another org**: the GitHub App's signing secret is app-wide, but the keys
   are per org, so bodies recorded under the old org are unseen by the new one. Accepted: moving an
   installation is a rare admin action, and a cross-org unique key would let one tenant's rows decide
-  another's writes. Recorded in the follow-up issue.
+  another's writes. Recorded in savvagent/otto-factory#271.
 - **Two genuinely different events with byte-identical bodies** (for example label, unlabel and
   relabel within one second, since GitHub timestamps have one-second resolution) are one delivery:
   the second is dropped. Accepted as rare; a later change on the ticket corrects it.
