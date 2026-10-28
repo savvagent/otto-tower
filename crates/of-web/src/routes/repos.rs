@@ -195,6 +195,13 @@ pub async fn register_repo(
         None => None,
     };
 
+    // A remote some other repo already owns is refused naming that repo. For a
+    // caller limited to some teams that repo may be hidden, so the refusal is
+    // redacted the same way the MCP tools redact it. Every caller who passes
+    // `require_admin` today is unrestricted, so this changes nothing yet; it
+    // keeps "a hidden repo is never named" true here without depending on the
+    // admin gate above, which exists for a different reason.
+    let scope = ctx.team_scope(&state.platform).await?;
     let mut tx = ctx.begin(&state.db).await?;
     let repo = tx
         .register_repo(NewRepo {
@@ -215,7 +222,8 @@ pub async fn register_repo(
             // From the session, never from the request.
             created_by: Some(ctx.user.id),
         })
-        .await?;
+        .await
+        .map_err(|e| scope.redact_foreign_ids(e))?;
 
     tx.audit(
         Entry::new(action::REPO_REGISTERED)
@@ -263,6 +271,8 @@ pub async fn update_repo(
         None => None,
     };
 
+    // `add_remotes` can hit a remote another repo owns; see `register_repo`.
+    let scope = ctx.team_scope(&state.platform).await?;
     let mut tx = ctx.begin(&state.db).await?;
     let repo = tx
         .resolve_repo(&of_core::repos::RepoRef {
@@ -285,7 +295,8 @@ pub async fn update_repo(
                 add_remotes: req.add_remotes,
             },
         )
-        .await?;
+        .await
+        .map_err(|e| scope.redact_foreign_ids(e))?;
 
     tx.audit(
         Entry::new(action::REPO_UPDATED)

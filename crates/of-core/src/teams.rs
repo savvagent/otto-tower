@@ -248,11 +248,45 @@ impl TeamScope {
     pub fn is_all(&self) -> bool {
         matches!(self, Self::All)
     }
+
+    /// Errors that name a row the caller never asked about (the job a ticket is
+    /// already linked to, the repo a remote belongs to, the far end of a
+    /// dependency chain) must not name one this scope cannot see. The message is
+    /// withheld and the code kept, so a caller branching on [`Error::code`] is
+    /// unaffected. Unrestricted callers get the error unchanged.
+    ///
+    /// The one definition both surfaces use: the MCP tools and the console's
+    /// repo writes, so the wording, and which errors are withheld, cannot drift
+    /// between them.
+    pub fn redact_foreign_ids(&self, e: Error) -> Error {
+        if self.is_all() {
+            return e;
+        }
+        let message = match &e {
+            Error::TicketAlreadyLinked { .. } => {
+                "that ticket_ref is already linked to another job in this repo; use a different \
+                 ticket_ref, or ask an administrator which job holds it"
+            }
+            Error::RemoteTaken(..) => {
+                "that remote is already registered to another repo; ask an administrator which"
+            }
+            Error::DependencyCycle(..) => {
+                "that change would make a job depend on itself, directly or through a chain; \
+                 drop the dependency that closes the loop"
+            }
+            _ => return e,
+        };
+        Error::Redacted {
+            code: e.code(),
+            message,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::JobId;
 
     #[test]
     fn team_slug_shape() {
@@ -265,5 +299,48 @@ mod tests {
             assert!(!team_slug_shape_ok(bad), "{bad:?} should be refused");
         }
         assert!(!team_slug_shape_ok(&"x".repeat(TEAM_SLUG_MAX + 1)));
+    }
+
+    fn naming_errors() -> Vec<Error> {
+        vec![
+            Error::TicketAlreadyLinked {
+                ticket_ref: "acme/web#7".into(),
+                job: JobId::from_seq(41),
+            },
+            Error::RemoteTaken("github.com/acme/secret".into(), "secret-repo".into()),
+            Error::DependencyCycle(JobId::from_seq(41), JobId::from_seq(42)),
+        ]
+    }
+
+    #[test]
+    fn an_unrestricted_scope_is_told_everything() {
+        for e in naming_errors() {
+            let before = e.to_string();
+            let after = TeamScope::All.redact_foreign_ids(e);
+            assert!(!matches!(after, Error::Redacted { .. }), "{after:?}");
+            assert_eq!(after.to_string(), before);
+        }
+    }
+
+    #[test]
+    fn a_team_limited_scope_keeps_the_code_and_loses_the_names() {
+        let scope = TeamScope::Teams(HashSet::from([TeamId::new()]));
+        for e in naming_errors() {
+            let code = e.code();
+            let after = scope.redact_foreign_ids(e);
+            assert!(matches!(after, Error::Redacted { .. }), "{after:?}");
+            assert_eq!(after.code(), code);
+            let text = after.to_string();
+            for name in ["secret-repo", "github.com/acme/secret", "job-41", "job-42"] {
+                assert!(!text.contains(name), "{name} leaked: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn errors_that_name_nothing_foreign_pass_through() {
+        let scope = TeamScope::Teams(HashSet::new());
+        let after = scope.redact_foreign_ids(Error::RepoSlugTaken("mine".into()));
+        assert!(matches!(after, Error::RepoSlugTaken(_)), "{after:?}");
     }
 }

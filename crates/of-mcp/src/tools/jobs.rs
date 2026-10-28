@@ -31,8 +31,8 @@ use serde::Deserialize;
 
 use super::{
     dependency_refs, ensure_job_visible, ensure_jobs_visible, job_ref, job_ref_for_write,
-    job_refs_for_write, maybe_repo_of, out, redact_foreign_ids, repo_for_write, retain_visible,
-    scope, visible_ids, visible_job,
+    job_refs_for_write, maybe_repo_of, out, repo_for_write, retain_visible, scope, visible_ids,
+    visible_job,
 };
 use crate::server::{Factory, McpResult};
 use of_core::repos::Hold;
@@ -734,7 +734,7 @@ impl Factory {
         let now = tx
             .lock_job_visible(&job.id, team)
             .await
-            .map_err(|e| redact_foreign_ids(team, e))
+            .map_err(|e| team.redact_foreign_ids(e))
             .mcp()?;
         if now.tracker != job.tracker || now.ticket_ref != job.ticket_ref {
             return Err(tracker_sync_error(
@@ -756,7 +756,7 @@ impl Factory {
             let home = format!("{owner}/{repo}").to_ascii_lowercase();
             tx.add_ticket_dependencies(&job.id, &home, &tickets, team)
                 .await
-                .map_err(|e| redact_foreign_ids(team, e))
+                .map_err(|e| team.redact_foreign_ids(e))
                 .mcp()?
         } else {
             Vec::new()
@@ -1650,7 +1650,7 @@ impl Factory {
         let deps = tx
             .set_dependencies(&job, &add, &remove)
             .await
-            .map_err(|e| redact_foreign_ids(&team, e))
+            .map_err(|e| team.redact_foreign_ids(e))
             .mcp()?;
         // Dependencies the caller cannot see are not theirs to be told about.
         let deps = visible_ids(&mut tx, &team, deps).await?;
@@ -1767,7 +1767,7 @@ impl Factory {
         let job = tx
             .link_ticket(&id, args.tracker, &args.ticket_ref)
             .await
-            .map_err(|e| redact_foreign_ids(&team, e))
+            .map_err(|e| team.redact_foreign_ids(e))
             .mcp()?;
         tx.commit().await.mcp()?;
 

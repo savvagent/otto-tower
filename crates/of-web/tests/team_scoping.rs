@@ -177,6 +177,48 @@ async fn a_hidden_repo_is_not_found_and_not_named_anywhere(pool: PgPool) {
     );
 }
 
+/// A remote already owned by a hidden repo must not name that repo: not when a
+/// member registers a repo with it, and not when one adds it to a repo they
+/// can see. Today both writes are admin-only, so the member is refused before
+/// the conflict is found; the console still redacts `remote_taken` for a
+/// team-limited caller (`TeamScope::redact_foreign_ids`, as MCP does), so the
+/// rule holds whichever check catches it. An owner is told which repo it is.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_taken_remote_never_names_a_hidden_repo(pool: PgPool) {
+    let w = world(pool).await;
+    let remote = "git@github.com:acme/platform.git";
+    Call::patch("/api/orgs/acme/repos/platform-repo")
+        .with_session(&w.rob.session)
+        .json(json!({ "addRemotes": [remote] }))
+        .send(&w.h.router)
+        .await
+        .expect(StatusCode::OK);
+
+    let register = |who: &Account| {
+        Call::post("/api/orgs/acme/repos")
+            .with_session(&who.session)
+            .json(json!({ "slug": "copycat", "remotes": [remote] }))
+    };
+    let add_to_shared = |who: &Account| {
+        Call::patch("/api/orgs/acme/repos/shared")
+            .with_session(&who.session)
+            .json(json!({ "addRemotes": [remote] }))
+    };
+
+    for call in [register(&w.bob), add_to_shared(&w.bob)] {
+        let r = call.send(&w.h.router).await;
+        assert!(r.status.is_client_error(), "{} {}", r.status, r.text);
+        assert!(!r.text.contains("platform-repo"), "{}", r.text);
+    }
+
+    for call in [register(&w.rob), add_to_shared(&w.rob)] {
+        let r = call.send(&w.h.router).await;
+        r.expect(StatusCode::CONFLICT);
+        assert_eq!(r.body["error"]["code"], "remote_taken", "{}", r.text);
+        assert!(r.text.contains("platform-repo"), "{}", r.text);
+    }
+}
+
 #[sqlx::test(migrations = "../of-core/migrations")]
 async fn jobs_are_scoped_to_org_wide_plus_the_callers_teams(pool: PgPool) {
     let w = world(pool).await;

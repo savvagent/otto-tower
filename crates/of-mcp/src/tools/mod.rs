@@ -304,35 +304,6 @@ pub(crate) async fn visible_ids(
     tx.visible_job_ids(&ids, team).await.mcp()
 }
 
-/// Errors that name a row the caller never asked about (the job a ticket is
-/// already linked to, the repo a remote belongs to, the far end of a dependency
-/// chain) must not name one they cannot see. The message is withheld and the
-/// code kept, so an agent branching on the code is unaffected. Unrestricted
-/// callers get the error unchanged.
-pub(crate) fn redact_foreign_ids(team: &TeamScope, e: of_core::Error) -> of_core::Error {
-    if team.is_all() {
-        return e;
-    }
-    let message = match &e {
-        of_core::Error::TicketAlreadyLinked { .. } => {
-            "that ticket_ref is already linked to another job in this repo; use a different \
-             ticket_ref, or ask an administrator which job holds it"
-        }
-        of_core::Error::RemoteTaken(..) => {
-            "that remote is already registered to another repo; ask an administrator which"
-        }
-        of_core::Error::DependencyCycle(..) => {
-            "that change would make a job depend on itself, directly or through a chain; \
-             drop the dependency that closes the loop"
-        }
-        _ => return e,
-    };
-    of_core::Error::Redacted {
-        code: e.code(),
-        message,
-    }
-}
-
 /// Refuse unless every job named is one the caller may see, so a write cannot
 /// reach into a team the caller is not on. Each job's repo stays held until the
 /// transaction ends, so an admin cannot move it out of the caller's teams
