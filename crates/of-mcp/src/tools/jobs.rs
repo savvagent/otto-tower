@@ -30,8 +30,9 @@ use rmcp::{tool, tool_router};
 use serde::Deserialize;
 
 use super::{
-    ensure_job_visible, ensure_jobs_visible, job_ref, job_refs, maybe_repo_of, out,
-    redact_foreign_ids, repo_for_write, retain_visible, scope, visible_ids, visible_job,
+    dependency_refs, ensure_job_visible, ensure_jobs_visible, job_ref, job_ref_for_write,
+    job_refs_for_write, maybe_repo_of, out, redact_foreign_ids, repo_for_write, retain_visible,
+    scope, visible_ids, visible_job,
 };
 use crate::server::{Factory, McpResult};
 use of_core::repos::Hold;
@@ -51,6 +52,52 @@ fn ticket_filter(raw: Option<&str>) -> of_core::Result<Option<TicketQuery>> {
                 .into(),
         )),
     }
+}
+
+/// Whether any of `raw` is a short issue reference (`#N`), the one form a
+/// dependency argument reads relative to a home repository. Malformed input
+/// is left for the resolver to refuse with its own message.
+fn any_short_ref(raw: &[String]) -> bool {
+    raw.iter()
+        .any(|r| matches!(JobRef::parse(r), Ok(JobRef::Ticket(t)) if t.is_short()))
+}
+
+/// The GitHub `owner/repo` a repo is bound to: what a short `#N` in
+/// `add_job`'s `dependsOn` is read against. `None` when the repo has no GitHub
+/// binding, or one whose `external_ref` is not a single `owner/repo` (no
+/// reference could name it). The binding rather than the repo's remotes,
+/// because a repo can have several remotes and only one binding per provider.
+async fn github_home(
+    tx: &mut otto_tenant::Tx<'_>,
+    repo_id: of_core::ids::RepoId,
+) -> Result<Option<String>, ErrorData> {
+    let binding = resolve_binding(tx, repo_id, Provider::Github).await.mcp()?;
+    Ok(binding
+        .map(|b| b.external_ref)
+        .filter(|r| of_core::ticket_ref::owner_repo_ok(r)))
+}
+
+/// `add_job`'s `dependsOn`, resolved: a short `#N` as an issue of the repo's
+/// bound GitHub repository (see [`github_home`]).
+async fn add_job_dependencies(
+    tx: &mut otto_tenant::Tx<'_>,
+    team: &of_core::teams::TeamScope,
+    repo_id: of_core::ids::RepoId,
+    raw: &[String],
+) -> Result<Vec<of_core::ids::JobId>, ErrorData> {
+    let home = if any_short_ref(raw) {
+        github_home(tx, repo_id).await?
+    } else {
+        None
+    };
+    dependency_refs(
+        tx,
+        team,
+        raw,
+        home.as_deref(),
+        "this repo has no GitHub binding to take owner/repo from",
+    )
+    .await
 }
 
 fn provider_of(tracker: Tracker) -> Provider {
@@ -89,19 +136,36 @@ fn parse_github_ticket_ref(ticket_ref: &str) -> Option<(&str, &str, i64)> {
     of_core::ticket_ref::split_full(ticket_ref)
 }
 
-/// Whether a failed read of a GitHub issue is worth retrying as it stands. A
-/// transport failure, a 5xx, a 429 or a garbled answer can clear up on its
-/// own; anything else GitHub answered (401, 403, 404, 422: the App cannot see
-/// the issue, or it does not exist) and anything refused before a request
-/// was made will fail the same way until someone changes something.
-fn github_read_retriable(error: &of_trackers::Error) -> bool {
+/// Whether a failed GitHub call (the issue read or the write-back) is worth
+/// retrying as it stands. A transport failure, a 5xx, a 429, a 403 that says
+/// it is a rate limit (GitHub answers both its primary and secondary limits
+/// with a 403 as often as a 429) or a garbled answer can clear up on its own.
+/// Anything else GitHub answered (401, a 403 that is not a rate limit, 404,
+/// 422: the App cannot see the issue, or it does not exist), and anything
+/// refused before a request was made (configuration, a bad stored reference),
+/// will fail the same way until someone changes something.
+fn github_retriable(error: &of_trackers::Error) -> bool {
     match error {
         of_trackers::Error::Http { .. } | of_trackers::Error::InvalidResponse { .. } => true,
-        of_trackers::Error::Api { status, .. } => {
-            status.is_server_error() || status.as_u16() == 429
+        of_trackers::Error::Api { status, body, .. } => {
+            status.is_server_error()
+                || status.as_u16() == 429
+                || (status.as_u16() == 403 && body.to_ascii_lowercase().contains("rate limit"))
         }
         _ => false,
     }
+}
+
+/// Whether a stored GitHub ticket's `owner`/`repo` is the repository the job's
+/// repo is bound to. Every GitHub request goes out with the binding's
+/// installation token, which can reach every repository the App is installed
+/// on, so a ticketRef naming some other repository (typed into link_ticket, or
+/// left behind by a rename) must not choose where that token is used.
+/// GitHub's names are case-insensitive, so the comparison is too.
+fn ticket_in_binding(owner: &str, repo: &str, binding_external_ref: &str) -> bool {
+    binding_external_ref
+        .split_once('/')
+        .is_some_and(|(o, r)| o.eq_ignore_ascii_case(owner) && r.eq_ignore_ascii_case(repo))
 }
 
 /// A job's GitHub installation id, from its connection's `external_id`.
@@ -148,7 +212,9 @@ pub struct AddJobArgs {
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     /// Jobs that must be completed before this one can be claimed. Each is a job
-    /// id like "job-42", or the job's issue as "#928" or "owner/repo#928".
+    /// id like "job-42", or an issue as "owner/repo#928". A short "#928" means
+    /// issue 928 of the GitHub repository this repo is bound to, as GitHub reads
+    /// "#928" there; a repo with no GitHub binding needs the full form.
     #[serde(default)]
     pub depends_on: Vec<String>,
     /// A caller-chosen key. Replaying add_job with the same key and the same
@@ -165,7 +231,9 @@ pub struct AddJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct JobArgs {
-    /// A job id like "job-42", or the job's issue as "#928" or "owner/repo#928".
+    /// A job id like "job-42", or the job's issue as "owner/repo#928". get_job
+    /// also takes a short "#928" (that number in any repo); a tool that changes
+    /// the job refuses it, because it can match an issue in any repo.
     pub job: String,
 }
 
@@ -229,7 +297,7 @@ pub struct ReadyArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateJobArgs {
-    /// The job to change. A job id like "job-42", or the job's issue as "#928" or "owner/repo#928".
+    /// The job to change. A job id like "job-42", or the job's issue as "owner/repo#928".
     pub job: String,
     #[serde(default)]
     pub title: Option<String>,
@@ -245,8 +313,8 @@ pub struct UpdateJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClaimJobsArgs {
-    /// The jobs to take. All or none succeed. Each is a job id like "job-42", or the job's issue as
-    /// "#928" or "owner/repo#928".
+    /// The jobs to take. All or none succeed. Each is a job id like "job-42",
+    /// or the job's issue as "owner/repo#928".
     pub jobs: Vec<String>,
     /// How you want to be identified to teammates looking at the queue, for
     /// example "api-agent@ci-7". At most 128 characters on one line, with no
@@ -266,8 +334,7 @@ pub struct ClaimJobsArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompleteJobArgs {
-    /// The job you finished. A job id like "job-42", or the job's issue as "#928" or
-    /// "owner/repo#928".
+    /// The job you finished. A job id like "job-42", or the job's issue as "owner/repo#928".
     pub job: String,
     /// What you did, for whoever reads this later.
     #[serde(default)]
@@ -289,8 +356,7 @@ pub struct CompleteJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FailJobArgs {
-    /// The job you could not finish. A job id like "job-42", or the job's issue as "#928" or
-    /// "owner/repo#928".
+    /// The job you could not finish. A job id like "job-42", or the job's issue as "owner/repo#928".
     pub job: String,
     /// Why it failed, specifically enough that the next attempt can do better.
     #[serde(default)]
@@ -312,8 +378,7 @@ pub struct FailJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenewClaimArgs {
-    /// The job you are still working on. A job id like "job-42", or the job's issue as "#928" or
-    /// "owner/repo#928".
+    /// The job you are still working on. A job id like "job-42", or the job's issue as "owner/repo#928".
     pub job: String,
     /// Seconds from now until the claim expires — not added to whatever
     /// time was left on it. Same default (900s) and clamp range (60 seconds
@@ -338,8 +403,7 @@ pub struct RenewClaimArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RequestCancelArgs {
-    /// The job to ask to stop. A job id like "job-42", or the job's issue as "#928" or
-    /// "owner/repo#928".
+    /// The job to ask to stop. A job id like "job-42", or the job's issue as "owner/repo#928".
     pub job: String,
     /// Why, for whoever is holding it and for the audit trail.
     #[serde(default)]
@@ -349,8 +413,8 @@ pub struct RequestCancelArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CancelJobArgs {
-    /// The job you were working on and are stopping. A job id like "job-42", or the job's issue as
-    /// "#928" or "owner/repo#928".
+    /// The job you were working on and are stopping. A job id like "job-42",
+    /// or the job's issue as "owner/repo#928".
     pub job: String,
     /// What you were doing when you stopped, for whoever reads this later.
     #[serde(default)]
@@ -372,15 +436,17 @@ pub struct CancelJobArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SetDependenciesArgs {
-    /// The job whose dependencies are changing. A job id like "job-42", or the job's issue as
-    /// "#928" or "owner/repo#928".
+    /// The job whose dependencies are changing. A job id like "job-42", or the
+    /// job's issue as "#928" (that number in any repo, refused as ambiguous if
+    /// several jobs have it) or "owner/repo#928".
     pub job: String,
-    /// Jobs this job should wait for. Each is a job id like "job-42", or the
-    /// job's issue as "#928" or "owner/repo#928".
+    /// Jobs this job should wait for. Each is a job id like "job-42", or an
+    /// issue as "owner/repo#928". A short "#928" means issue 928 of this job's
+    /// own repository, taken from its ticketRef; a job with no ticketRef of the
+    /// form owner/repo#N needs the full form.
     #[serde(default)]
     pub add: Vec<String>,
-    /// Jobs it should stop waiting for. Each is a job id like "job-42", or the
-    /// job's issue as "#928" or "owner/repo#928".
+    /// Jobs it should stop waiting for, named as in add.
     #[serde(default)]
     pub remove: Vec<String>,
 }
@@ -388,14 +454,26 @@ pub struct SetDependenciesArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkTicketArgs {
-    /// The job to attach a tracker ticket to. A job id like "job-42", or the job's issue as "#928"
-    /// or "owner/repo#928".
+    /// The job to attach a tracker ticket to. A job id like "job-42", or the job's issue as "owner/repo#928".
     pub job: String,
     /// Which tracker the ticket lives in: "jira" or "github".
     pub tracker: Tracker,
     /// The ticket's reference in that tracker, e.g. "PROJ-123" or
     /// "acme/api#42". Recorded, not resolved.
     pub ticket_ref: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTicketArgs {
+    /// The job whose ticket to sync. A job id like "job-42", or the job's issue
+    /// as "owner/repo#928".
+    pub job: String,
+    /// Also turn the GitHub issue's "Blocked by #N" lines into dependencies of
+    /// this job. Defaults to false: nothing is added unless you ask. Needs the
+    /// jobs:write scope as well as trackers; asking without it is refused.
+    #[serde(default)]
+    pub import_blockers: bool,
 }
 
 /// The outcome of looking up whether a job's repo actually has somewhere to
@@ -525,10 +603,27 @@ impl Factory {
         let plan = outbound_decision(transition, tracker, detail);
         match tracker {
             Tracker::Github => {
+                // A ticketRef outside the bound repository gets no request at
+                // all (see `ticket_in_binding`). Skipped rather than failed:
+                // the transition that triggered this has already happened.
+                // Only the job id is logged; the refs are caller-typed text.
+                let in_binding =
+                    parse_github_ticket_ref(ticket_ref).is_some_and(|(owner, repo, _)| {
+                        ticket_in_binding(owner, repo, &binding.external_ref)
+                    });
+                if !in_binding {
+                    tracing::warn!(
+                        job_id = %job.id,
+                        "skipping GitHub write-back: the job's ticketRef is not an issue in \
+                         the repository its repo is bound to"
+                    );
+                    return Ok(());
+                }
                 let client = self.github_app_client()?;
                 let outcome = self
                     .sync_github_job(&client, job, ticket_ref, &connection.external_id, &plan)
-                    .await?;
+                    .await
+                    .map_err(|error| error.to_string())?;
                 if let Some(remote_revision) = outcome {
                     let mut tx = of_core::platform_events::begin_live(self.db(), job.org_id, None)
                         .await
@@ -607,6 +702,15 @@ impl Factory {
     /// issue's "Blocked by" lines name, all in one transaction. Committed
     /// before the write-back, so a tracker failure after this leaves the
     /// dependencies in place and a retry reports them as `already`.
+    ///
+    /// `job` was read in a transaction that has already committed, and the
+    /// issue was fetched since, so what was fetched may no longer be this
+    /// job's issue: `link_ticket` can relink the job while the request is in
+    /// flight. The job's row is locked here, before anything is written, and
+    /// its link compared with the one the issue was fetched for. A relinked
+    /// job is refused (retriable: the next call reads the issue it is linked
+    /// to now) rather than given another issue's blockers and drift time, and
+    /// the drift comparison uses the `remote_revision` read under the lock.
     #[allow(clippy::too_many_arguments)]
     async fn record_issue_signals(
         &self,
@@ -624,21 +728,33 @@ impl Factory {
             Vec::new()
         };
         let mut tx = self.tx(caller).await?;
-        // A write: hold the job's repo before the drift mark, so an admin's
-        // team reassignment cannot commit between this check and the writes.
-        // The read that found the job was in a transaction that has already
-        // committed.
-        tx.get_job_visible_held(&job.id, team)
+        // A write: the job's row is locked and its repo held before the drift
+        // mark, so neither a relink nor an admin's team reassignment can
+        // commit between this check and the writes.
+        let now = tx
+            .lock_job_visible(&job.id, team)
             .await
             .map_err(|e| redact_foreign_ids(team, e))
             .mcp()?;
+        if now.tracker != job.tracker || now.ticket_ref != job.ticket_ref {
+            return Err(tracker_sync_error(
+                format!(
+                    "job {} was relinked to another ticket while sync_ticket was reading its \
+                     issue, so nothing was recorded; call sync_ticket again to read the issue \
+                     it is linked to now",
+                    job.id
+                ),
+                true,
+            ));
+        }
         if let Some(at) =
-            foreign_change(issue.updated_at.as_deref(), job.remote_revision.as_deref())
+            foreign_change(issue.updated_at.as_deref(), now.remote_revision.as_deref())
         {
             tx.note_ticket_changed(&job.id, at).await.mcp()?;
         }
         let blockers = if import_blockers {
-            tx.add_ticket_dependencies(&job.id, &tickets, team)
+            let home = format!("{owner}/{repo}").to_ascii_lowercase();
+            tx.add_ticket_dependencies(&job.id, &home, &tickets, team)
                 .await
                 .map_err(|e| redact_foreign_ids(team, e))
                 .mcp()?
@@ -658,21 +774,47 @@ impl Factory {
     /// on a failed record, leaving remote_revision stale and making a retry
     /// re-post to the tracker for a sync that already went through. The
     /// re-read's own failure is reported last for the same reason.
+    ///
+    /// The blocker ids are re-checked in the same transaction as the job: they
+    /// were found in an earlier, committed one, and a blocker whose repo moved
+    /// out of the caller's teams during the tracker round trip must not be
+    /// named in the answer. Its id is dropped from `jobs`; the outcome stays,
+    /// because it is still what happened.
     async fn finish_sync_ticket(
         &self,
         mut tx: otto_tenant::Tx<'static>,
         caller: &crate::auth::Principal,
         team: &of_core::teams::TeamScope,
         id: &of_core::ids::JobId,
-    ) -> Result<Job, ErrorData> {
+        mut blockers: Vec<BlockerOutcome>,
+    ) -> Result<(Job, Vec<BlockerOutcome>), ErrorData> {
         let job = tx.get_job_visible(id, team).await;
+        let named: Vec<of_core::ids::JobId> = blockers
+            .iter()
+            .flat_map(|b| b.jobs.iter().cloned())
+            .collect();
+        let seen = if team.is_all() || named.is_empty() {
+            Ok(None)
+        } else {
+            tx.visible_job_ids(&named, team).await.map(Some)
+        };
         tx.commit().await.mcp()?;
         let mut charge_tx = self.tx(caller).await?;
         self.charge(&mut charge_tx, caller, "sync_ticket").await?;
         charge_tx.commit().await.mcp()?;
-        job.mcp()
+        let job = job.mcp()?;
+        if let Some(seen) = seen.mcp()? {
+            for b in &mut blockers {
+                b.jobs.retain(|j| seen.contains(j));
+            }
+        }
+        Ok((job, blockers))
     }
 
+    /// The GitHub write-back. Its error is `of_trackers::Error` rather than a
+    /// string so `sync_ticket` can tell, with `github_retriable`, a GitHub
+    /// outage from an answer that will not change; the problems this finds
+    /// before any request (`Internal`) are never worth retrying.
     async fn sync_github_job(
         &self,
         client: &GithubAppClient,
@@ -680,21 +822,21 @@ impl Factory {
         ticket_ref: &str,
         external_id: &str,
         plan: &of_trackers::sync::OutboundDecision,
-    ) -> Result<Option<String>, String> {
-        let installation_id = github_installation_id(job, external_id)?;
+    ) -> Result<Option<String>, of_trackers::Error> {
+        let installation_id =
+            github_installation_id(job, external_id).map_err(of_trackers::Error::Internal)?;
         let (owner, repo, issue_number) = parse_github_ticket_ref(ticket_ref).ok_or_else(|| {
-            format!(
+            of_trackers::Error::Internal(format!(
                 "job {} has an invalid GitHub ticket_ref {ticket_ref:?}",
                 job.id
-            )
+            ))
         })?;
 
         client
             .post_comment(installation_id, owner, repo, issue_number, &plan.comment)
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         let remote_revision = if let Some(close) = plan.github_close.as_ref() {
-            match client
+            client
                 .set_issue_state(
                     installation_id,
                     owner,
@@ -703,19 +845,45 @@ impl Factory {
                     "closed",
                     Some(&close.state_reason),
                 )
-                .await
-            {
-                Ok(updated_at) => updated_at,
-                Err(error) => return Err(error.to_string()),
-            }
+                .await?
         } else {
             client
                 .get_issue_updated_at(installation_id, owner, repo, issue_number)
-                .await
-                .map_err(|error| error.to_string())?
+                .await?
         };
 
         Ok(normalize_remote_revision(remote_revision.as_deref()))
+    }
+
+    /// The JIRA app's client id and secret and the key its stored refresh
+    /// tokens are sealed with. A missing one is server configuration: it fails
+    /// the same way until an operator sets it, which is why `sync_ticket`
+    /// checks this first and reports it as not retriable.
+    fn jira_config(&self) -> Result<(String, String, &str), String> {
+        let client_id = self.tracker_sync().jira_client_id.clone().ok_or_else(|| {
+            "JIRA tracker sync is not configured on this server (missing client id); an \
+             operator has to configure it, and retrying will not help"
+                .to_string()
+        })?;
+        let client_secret = self
+            .tracker_sync()
+            .jira_client_secret
+            .clone()
+            .ok_or_else(|| {
+                "JIRA tracker sync is not configured on this server (missing client secret); an \
+                 operator has to configure it, and retrying will not help"
+                    .to_string()
+            })?;
+        let encryption_key = self
+            .tracker_sync()
+            .encryption_key
+            .as_deref()
+            .ok_or_else(|| {
+                "JIRA tracker sync is not configured on this server (missing encryption key); an \
+                 operator has to configure it, and retrying will not help"
+                    .to_string()
+            })?;
+        Ok((client_id, client_secret, encryption_key))
     }
 
     async fn sync_jira_job(
@@ -726,24 +894,7 @@ impl Factory {
         connection: &of_core::trackers::TrackerConnection,
         plan: &of_trackers::sync::OutboundDecision,
     ) -> Result<JiraSyncOutcome, String> {
-        let client_id =
-            self.tracker_sync().jira_client_id.clone().ok_or_else(|| {
-                "JIRA tracker sync is not configured (missing client id)".to_string()
-            })?;
-        let client_secret = self
-            .tracker_sync()
-            .jira_client_secret
-            .clone()
-            .ok_or_else(|| {
-                "JIRA tracker sync is not configured (missing client secret)".to_string()
-            })?;
-        let encryption_key = self
-            .tracker_sync()
-            .encryption_key
-            .as_deref()
-            .ok_or_else(|| {
-                "JIRA tracker sync is not configured (missing encryption key)".to_string()
-            })?;
+        let (client_id, client_secret, encryption_key) = self.jira_config()?;
         let cipher = otto_tenant::crypto::Cipher::from_base64_key(encryption_key)
             .map_err(|error| error.to_string())?;
         let encoded = connection.encrypted_credentials.as_deref().ok_or_else(|| {
@@ -845,7 +996,8 @@ impl Factory {
         let Some(key) = args.idempotency_key else {
             self.charge(&mut tx, &caller, "add_job").await?;
             let repo = repo_for_write(&mut tx, &team, args.repo, args.remote, Hold::Shared).await?;
-            let depends_on = job_refs(&mut tx, &team, &args.depends_on).await?;
+            let depends_on =
+                add_job_dependencies(&mut tx, &team, repo.id, &args.depends_on).await?;
             ensure_jobs_visible(&mut tx, &team, &depends_on).await?;
             let job = tx
                 .add_job(NewJob {
@@ -876,7 +1028,7 @@ impl Factory {
         // linked the same issue, a retry that spelled the dependency as "#N" is
         // refused as ambiguous_ticket_ref rather than replayed. That is
         // acceptable, because the reference no longer names one job.
-        let depends_on = job_refs(&mut tx, &team, &args.depends_on).await?;
+        let depends_on = add_job_dependencies(&mut tx, &team, repo.id, &args.depends_on).await?;
         ensure_jobs_visible(&mut tx, &team, &depends_on).await?;
         let new_job = NewJob {
             repo_id: repo.id,
@@ -924,11 +1076,13 @@ impl Factory {
     #[tool(
         name = "get_job",
         description = "Fetch one job, with its full description, metadata, status and who \
-                       claimed it. Name it by id (\"job-42\") or by its issue (\"#928\" or \
-                       \"owner/repo#928\"), as every tool that takes a job accepts. An issue \
-                       more than one job you can see carries is refused with \
-                       ambiguous_ticket_ref, listing their ids; one no job carries is \
-                       job_not_found."
+                       claimed it. Name it by id (\"job-42\") or by its issue (\"#928\", \
+                       that number in any repo, or \"owner/repo#928\"). An issue more than one \
+                       job you can see carries is refused with ambiguous_ticket_ref, listing \
+                       their ids; one no job carries is job_not_found. Tools that change a job \
+                       take its id or \"owner/repo#928\" and refuse a short \"#928\", because \
+                       it can match an issue in any repo: use this, or list_jobs(ticket=...), \
+                       to find which job a short reference means."
     )]
     pub async fn get_job(
         &self,
@@ -1018,7 +1172,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "update_job").await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .update_job(
@@ -1051,7 +1205,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "delete_job").await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         // Deleting cascades to whatever depends on this job. If that includes
         // work the caller cannot see, it is not theirs to change.
@@ -1099,7 +1253,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "claim_jobs").await?;
-        let ids = job_refs(&mut tx, &team, &args.jobs).await?;
+        let ids = job_refs_for_write(&mut tx, &team, &args.jobs).await?;
         ensure_jobs_visible(&mut tx, &team, &ids).await?;
         let jobs = tx
             .claim_jobs(&ids, caller.user_id, args.agent.as_deref(), args.ttl)
@@ -1143,7 +1297,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "renew_claim").await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .renew_claim(&id, caller.user_id, args.ttl, args.expected_attempts)
@@ -1181,7 +1335,7 @@ impl Factory {
         let warmed = self.meter().warm(caller.org_id).await;
         let mut tx = self.tx(&caller).await?;
         self.charge_completion(&mut tx, &caller, &warmed).await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .complete_job(
@@ -1228,7 +1382,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "fail_job").await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .fail_job(
@@ -1277,7 +1431,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "request_cancel").await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .request_cancel(&id, caller.user_id, args.reason.as_deref())
@@ -1355,7 +1509,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "cancel_job").await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .cancel_job(
@@ -1410,7 +1564,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "activate_job").await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx.activate_job(&id).await.mcp()?;
         tx.commit().await.mcp()?;
@@ -1435,7 +1589,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "repend_job").await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx.repend_job(&id).await.mcp()?;
         tx.commit().await.mcp()?;
@@ -1448,7 +1602,11 @@ impl Factory {
         description = "Add or remove the jobs one job waits for. A job with unfinished \
                        dependencies cannot be claimed. A change that would make a job depend \
                        on itself, directly or through a chain, is rejected. Returns the \
-                       resulting dependency list."
+                       resulting dependency list. The job may be named as \"#928\" (unique \
+                       across the org, or refused as ambiguous). In add and remove, a short \
+                       \"#925\" means issue 925 of the job's own repository, taken from its \
+                       ticketRef; a job with no owner/repo#N ticketRef needs dependencies \
+                       named by id or as \"owner/repo#925\"."
     )]
     pub async fn set_dependencies(
         &self,
@@ -1461,9 +1619,27 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "set_dependencies").await?;
+        // The job itself may be a short "#928", resolved org-wide like a read:
+        // it is unique or refused as ambiguous, and this tool only ever
+        // changes the dependency list it names back in its answer.
         let job = job_ref(&mut tx, &team, &args.job).await?;
-        let add = job_refs(&mut tx, &team, &args.add).await?;
-        let remove = job_refs(&mut tx, &team, &args.remove).await?;
+        // A short dependency is an issue of this job's own repository, as
+        // GitHub reads "#925" in the job's issue, so "#925" here cannot pick
+        // up another repo's #925.
+        let home = if any_short_ref(&args.add) || any_short_ref(&args.remove) {
+            visible_job(&mut tx, &team, &job)
+                .await?
+                .ticket_ref
+                .as_deref()
+                .and_then(of_core::ticket_ref::split_full)
+                .map(|(owner, repo, _)| format!("{owner}/{repo}"))
+        } else {
+            None
+        };
+        let no_home = format!("{job} has no ticketRef of the form owner/repo#N");
+        let add = dependency_refs(&mut tx, &team, &args.add, home.as_deref(), &no_home).await?;
+        let remove =
+            dependency_refs(&mut tx, &team, &args.remove, home.as_deref(), &no_home).await?;
         ensure_jobs_visible(
             &mut tx,
             &team,
@@ -1585,7 +1761,7 @@ impl Factory {
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
         self.charge(&mut tx, &caller, "link_ticket").await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         ensure_job_visible(&mut tx, &team, &id).await?;
         let job = tx
             .link_ticket(&id, args.tracker, &args.ticket_ref)
@@ -1611,26 +1787,39 @@ impl Factory {
                        on; a request that only flags a claimed job does not sync until \
                        cancel_job later finalizes it), this call surfaces a tracker failure as \
                        its own error rather than swallowing it, because talking to the tracker is \
-                       the entire point of calling it. \
-                       For a GitHub job it also reads the issue first: each \"Blocked by #N\" \
-                       (or \"Blocked by owner/repo#N\") line in the issue's body adds a \
-                       dependency on the job linked to that issue, when exactly one job you can \
-                       see has it. Each reference's outcome is in blockers: added, already (it \
-                       was a dependency), no_job (no job has that issue; nothing changed), \
-                       ambiguous (several do, listed in jobs; add the right one with \
-                       set_dependencies), or cycle (that job is this one or already waits on \
-                       it; nothing changed). Nothing is ever removed. Adding dependencies needs \
-                       jobs:write as well as trackers; without it the issue is still read and \
-                       drift recorded, but no dependency is added, blockers is empty and \
-                       blockersImported is false (it is also false for a JIRA job). The \
-                       \"Blocked by\" lines come from the issue body, which anyone who can edit \
-                       the issue controls: they can only make this job wait on a job you can \
-                       see, never remove one, and set_dependencies undoes an unwanted one. The \
-                       read also sets the job's ticketStale when the issue changed after its \
-                       description was written. A pending GitHub job is read only: nothing is \
-                       posted to it. A GitHub read that fails with retriable: false (the App \
-                       cannot see the issue, it does not exist, or tracker sync is not \
-                       configured) will fail the same way until something is changed. \
+                       the entire point of calling it. Name the job by id or as \
+                       \"owner/repo#928\"; a short \"#928\" is refused, as on every tool that \
+                       changes a job. \
+                       For a GitHub job it also reads the issue first, and sets the job's \
+                       ticketStale when the issue changed after its description was written. \
+                       The job's ticketRef must name the repository its repo's GitHub binding \
+                       is for (compared ignoring case); one naming any other repository, for \
+                       example the old name of a renamed repository, is refused with \
+                       invalid_argument before anything is sent, and the fix is to relink it \
+                       with link_ticket using the bound repository's name. \
+                       With importBlockers: true (it defaults to false, and needs jobs:write as \
+                       well as trackers), each \"Blocked by #N\" (or \"Blocked by \
+                       owner/repo#N\") line in the issue's body adds a dependency on the job \
+                       linked to that issue, when exactly one job you can see has it. Only \
+                       issues in the same repository as this job's issue are followed. Each \
+                       reference's outcome is in blockers: added, already (it was a \
+                       dependency), no_job (no job has that issue; nothing changed), ambiguous \
+                       (several do, listed in jobs; add the right one with set_dependencies), \
+                       cycle (that job is this one or already waits on it; nothing changed), or \
+                       other_repo (the issue is in another repository; nothing was looked up or \
+                       changed). Nothing is ever removed. blockersImported says whether the \
+                       import ran: it is false when importBlockers was not set and for a JIRA \
+                       job, so an empty blockers is never mistaken for \"no Blocked by lines\". \
+                       The \"Blocked by\" lines come from the issue body, which anyone who can \
+                       edit the issue controls: they can only make this job wait on a job you \
+                       can see in the same repository, never remove one, and set_dependencies \
+                       undoes an unwanted one. \
+                       A pending GitHub job is read only: nothing is posted to it. \
+                       A failure with retriable: true (a GitHub or JIRA outage, a rate limit, \
+                       the job being relinked mid-call) is worth retrying after a pause. One \
+                       with retriable: false (the App cannot see the issue, it does not exist, \
+                       tracker sync is not configured on this server, a malformed ticketRef) \
+                       will fail the same way until someone changes something. \
                        Requires the job to already be linked via link_ticket and its repo to \
                        have an active tracker binding; a pending JIRA job is refused, because \
                        there is nothing to read or post for it yet."
@@ -1638,10 +1827,16 @@ impl Factory {
     pub async fn sync_ticket(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(args): Parameters<JobArgs>,
+        Parameters(args): Parameters<SyncTicketArgs>,
     ) -> Result<Json<out::SyncTicketOut>, ErrorData> {
         let caller = self.caller(&parts)?;
         caller.require_scope(scope::TRACKERS).mcp()?;
+        // Adding a dependency is a job write, which `trackers` alone does not
+        // grant. Asked for explicitly, so a token without it is refused
+        // outright, before anything is read, rather than quietly skipped.
+        if args.import_blockers {
+            caller.require_scope(scope::JOBS_WRITE).mcp()?;
+        }
 
         // Reading the job records nothing: the outbound call is the entire
         // point of this tool, and whether it succeeds is not known until
@@ -1650,7 +1845,7 @@ impl Factory {
         // refuse it for billing.
         let team = self.team_scope(&caller).await?;
         let mut tx = self.tx(&caller).await?;
-        let id = job_ref(&mut tx, &team, &args.job).await?;
+        let id = job_ref_for_write(&mut tx, &team, &args.job).await?;
         let job = visible_job(&mut tx, &team, &id).await?;
         tx.commit().await.mcp()?;
 
@@ -1699,9 +1894,7 @@ impl Factory {
             // reference grammar) is caller input, not a tracker outage: it
             // will never succeed no matter how many times it's retried.
             // Catching it here, ahead of any outbound call, keeps it out of
-            // `tracker_sync_error`'s retriable bucket — the parse failure
-            // inside `sync_github_job` itself is a `String` with no room to
-            // carry that distinction, so it must not be the thing this checks.
+            // `tracker_sync_error`'s retriable bucket.
             let Some((owner, repo, issue_number)) = parse_github_ticket_ref(&ticket_ref) else {
                 return Err(of_core::Error::Invalid(format!(
                     "job {} has a ticket_ref {ticket_ref:?} that is not a valid GitHub \
@@ -1711,6 +1904,16 @@ impl Factory {
                 )))
                 .mcp();
             };
+            // Before any token is minted: the installation token must only
+            // ever be used on the bound repository (see `ticket_in_binding`).
+            if !ticket_in_binding(owner, repo, &binding.external_ref) {
+                return Err(of_core::Error::Invalid(format!(
+                    "job {}'s ticketRef names {owner}/{repo}, but this repo's GitHub binding \
+                     is {}; relink it with link_ticket using the bound repo's name",
+                    job.id, binding.external_ref
+                )))
+                .mcp();
+            }
             // Missing App credentials or an unusable installation id are
             // configuration, and fail the same way until an operator fixes
             // them. One client for the read and the write-back, so the
@@ -1723,23 +1926,29 @@ impl Factory {
             let issue = client
                 .get_issue(installation_id, owner, repo, issue_number)
                 .await
-                .map_err(|error| {
-                    tracker_sync_error(error.to_string(), github_read_retriable(&error))
-                })?;
+                .map_err(|error| tracker_sync_error(error.to_string(), github_retriable(&error)))?;
 
-            // Adding a dependency is a job write, which `trackers` alone does
-            // not grant. Without `jobs:write` the issue is still read and
-            // drift recorded (that is tracker state, not a dependency).
-            let import_blockers = caller.has_scope(scope::JOBS_WRITE);
-            blockers_imported = import_blockers;
+            // Drift is tracker state, recorded whether or not blockers were
+            // asked for.
+            blockers_imported = args.import_blockers;
             blockers = self
-                .record_issue_signals(&caller, &team, &job, &issue, owner, repo, import_blockers)
+                .record_issue_signals(
+                    &caller,
+                    &team,
+                    &job,
+                    &issue,
+                    owner,
+                    repo,
+                    args.import_blockers,
+                )
                 .await?;
             if job.status == Status::Pending {
                 // Nothing to post for a job nobody has picked up yet: the read
                 // is the whole call.
                 let tx = self.tx(&caller).await?;
-                let job = self.finish_sync_ticket(tx, &caller, &team, &job.id).await?;
+                let (job, blockers) = self
+                    .finish_sync_ticket(tx, &caller, &team, &job.id, blockers)
+                    .await?;
                 return Ok(Json(out::SyncTicketOut {
                     job,
                     blockers,
@@ -1795,17 +2004,21 @@ impl Factory {
         };
 
         let plan = outbound_decision(transition, tracker, detail.as_deref());
-        let job = match tracker {
+        let (job, blockers) = match tracker {
             Tracker::Github => {
                 // Built above, before the read; a GitHub job that got here
                 // without one would be a bug in this function.
                 let client = github.as_ref().ok_or_else(|| {
                     tracker_sync_error("GitHub client missing for the write-back", false)
                 })?;
+                // Classified exactly as the read is: an outage or a rate limit
+                // is worth retrying, an answer GitHub will give again is not.
                 let outcome = self
                     .sync_github_job(client, &job, &ticket_ref, &connection.external_id, &plan)
                     .await
-                    .map_err(|error| tracker_sync_error(error, true))?;
+                    .map_err(|error| {
+                        tracker_sync_error(error.to_string(), github_retriable(&error))
+                    })?;
                 // Committed before the call is recorded; see
                 // `finish_sync_ticket`. The re-read is under the caller's
                 // scope, as of now: see the note at the end of this function.
@@ -1815,7 +2028,8 @@ impl Factory {
                         .await
                         .mcp()?;
                 }
-                self.finish_sync_ticket(tx, &caller, &team, &job.id).await?
+                self.finish_sync_ticket(tx, &caller, &team, &job.id, blockers)
+                    .await?
             }
             Tracker::Jira => {
                 // Same reasoning as the GitHub arm's pre-parse above: an
@@ -1837,6 +2051,11 @@ impl Factory {
                     )))
                     .mcp();
                 }
+                // Checked before anything is sent, so a server with no JIRA
+                // app configured says so as the configuration fault it is
+                // rather than as a retriable tracker failure.
+                self.jira_config()
+                    .map_err(|error| tracker_sync_error(error, false))?;
                 let outcome = self
                     .sync_jira_job(&job, &ticket_ref, &binding.external_ref, &connection, &plan)
                     .await
@@ -1868,7 +2087,8 @@ impl Factory {
                     .await
                     .mcp()?;
                 }
-                self.finish_sync_ticket(tx, &caller, &team, &job.id).await?
+                self.finish_sync_ticket(tx, &caller, &team, &job.id, blockers)
+                    .await?
             }
         };
 
@@ -1877,7 +2097,8 @@ impl Factory {
         // inside a transaction, and once it has happened its write-back is
         // loop-safety state that must land whoever may see the job now. What
         // is decided again is what the caller gets back. A job whose repo moved
-        // out of their teams mid-call is `job_not_found`, not returned.
+        // out of their teams mid-call is `job_not_found`, not returned, and a
+        // blocker that moved out of sight is no longer named.
         Ok(Json(out::SyncTicketOut {
             job,
             blockers,

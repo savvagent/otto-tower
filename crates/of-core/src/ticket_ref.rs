@@ -103,6 +103,38 @@ impl TicketQuery {
     }
 }
 
+impl TicketQuery {
+    /// Whether this is the short form `#N`, which names no repository.
+    pub fn is_short(&self) -> bool {
+        self.owner_repo.is_none()
+    }
+
+    /// The lowercased `owner/repo` of a full reference; `None` for `#N`.
+    pub fn owner_repo(&self) -> Option<&str> {
+        self.owner_repo.as_deref()
+    }
+
+    /// This reference read relative to `owner_repo`: a short `#N` becomes
+    /// `owner_repo#N`, as GitHub reads `#N` in an issue of that repository; a
+    /// full reference is returned unchanged. `None` when `owner_repo` is not
+    /// one valid `OWNER/REPO` ([`owner_repo_ok`]), so a caller cannot qualify
+    /// a reference with something no full reference could have said.
+    pub fn within(&self, owner_repo: &str) -> Option<TicketQuery> {
+        if self.owner_repo.is_some() {
+            return Some(self.clone());
+        }
+        owner_repo_ok(owner_repo).then(|| TicketQuery {
+            owner_repo: Some(owner_repo.to_ascii_lowercase()),
+            number: self.number,
+        })
+    }
+
+    /// The issue number.
+    pub fn number(&self) -> u64 {
+        self.number
+    }
+}
+
 impl std::fmt::Display for TicketQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.exact())
@@ -133,6 +165,27 @@ pub fn segment_ok(s: &str) -> bool {
         && s != ".."
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Whether `s` is exactly `OWNER/REPO`, each a [`segment_ok`] segment: the
+/// shape of a GitHub binding's `external_ref` and of the repository half of a
+/// full reference.
+pub fn owner_repo_ok(s: &str) -> bool {
+    s.split_once('/')
+        .is_some_and(|(owner, repo)| segment_ok(owner) && segment_ok(repo))
+}
+
+/// The refusal for a short `#N` on a tool that changes a job. A write takes a
+/// job id or `owner/repo#N`, because `#N` matches that number in every repo
+/// and the one job it finds today may not be the one meant: a write must not
+/// land on `acme/web#12` because `acme/api#12` has no job yet.
+pub fn short_ref_on_write(ticket: &TicketQuery) -> Error {
+    let short = ticket.exact();
+    Error::Invalid(format!(
+        "{short:?} can match an issue in any repo; on a tool that changes a job, name it by id \
+         or as owner/repo{short} (get_job({short:?}) or list_jobs(ticket={short:?}) shows which \
+         job it is)"
+    ))
 }
 
 /// Split a stored full reference, `owner/repo#N`, into its parts, keeping the

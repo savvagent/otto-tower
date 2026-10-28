@@ -225,13 +225,45 @@ pub(crate) async fn job_ref(
     tx.resolve_job_ref(raw, team).await.mcp()
 }
 
-/// [`job_ref`] for each of `raw`, in order, stopping at the first refusal.
-pub(crate) async fn job_refs(
+/// [`job_ref`] for a tool that changes the job it names: a job id or a full
+/// `owner/repo#N`, and a short `#N` refused with `invalid_argument`. `#N`
+/// matches that number in every repo, so the job it finds today may be another
+/// repo's, and a write (a billed completion, a delete) must not land there
+/// just because the job meant has no issue link yet. Reads keep the short form
+/// ([`job_ref`]), where a wrong guess costs nothing and an ambiguous one says so.
+pub(crate) async fn job_ref_for_write(
+    tx: &mut Tx<'_>,
+    team: &TeamScope,
+    raw: &str,
+) -> Result<JobId, ErrorData> {
+    tx.resolve_job_ref_for_write(raw, team).await.mcp()
+}
+
+/// [`job_ref_for_write`] for each of `raw`, in order, stopping at the first
+/// refusal.
+pub(crate) async fn job_refs_for_write(
     tx: &mut Tx<'_>,
     team: &TeamScope,
     raw: &[String],
 ) -> Result<Vec<JobId>, ErrorData> {
-    tx.resolve_job_refs(raw, team).await.mcp()
+    tx.resolve_job_refs_for_write(raw, team).await.mcp()
+}
+
+/// Dependency arguments (`set_dependencies`' `add`/`remove`, `add_job`'s
+/// `dependsOn`), where a short `#N` is issue N of the dependent job's own
+/// GitHub repository, `home` ("owner/repo"), the way GitHub itself reads `#N`
+/// in that repository's issues. With no `home` a short reference is refused,
+/// with `no_home` saying why. See `JobsExt::resolve_dependency_refs`.
+pub(crate) async fn dependency_refs(
+    tx: &mut Tx<'_>,
+    team: &TeamScope,
+    raw: &[String],
+    home: Option<&str>,
+    no_home: &str,
+) -> Result<Vec<JobId>, ErrorData> {
+    tx.resolve_dependency_refs(raw, home, no_home, team)
+        .await
+        .mcp()
 }
 
 /// Fetch a job the caller may see. A job of a team the caller is not on is

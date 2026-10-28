@@ -20,8 +20,8 @@ use rmcp::{tool, tool_router};
 use serde::Deserialize;
 
 use super::{
-    channel_arg, channel_of, ensure_job_visible, job_ref, maybe_repo_of, out, repo_for_write,
-    scope, ChannelArg,
+    channel_arg, channel_of, ensure_job_visible, job_ref_for_write, maybe_repo_of, out,
+    repo_for_write, scope, ChannelArg,
 };
 use crate::server::{Factory, McpResult};
 
@@ -68,8 +68,9 @@ pub struct AcquireLeaseArgs {
     /// same as omitting it.
     #[serde(default)]
     pub agent: Option<String>,
-    /// The job this lease is for, if there is one. A job id like "job-42", or the job's issue as
-    /// "#928" or "owner/repo#928".
+    /// The job this lease is for, if there is one. A job id like "job-42", or
+    /// the job's issue as "owner/repo#928" (a short "#928" is refused here, as
+    /// on every tool that changes a job: it can match an issue in any repo).
     #[serde(default)]
     pub job: Option<String>,
     /// How long to hold it before it expires. Defaults to 15 minutes, capped
@@ -124,8 +125,9 @@ pub struct SendMessageArgs {
     /// repo/remote, not both.
     #[serde(default)]
     pub team: Option<String>,
-    /// The job this is about, if any. A job id like "job-42", or the job's issue as "#928" or
-    /// "owner/repo#928".
+    /// The job this is about, if any. A job id like "job-42", or the job's
+    /// issue as "owner/repo#928" (a short "#928" is refused here, as on every
+    /// tool that changes a job: it can match an issue in any repo).
     #[serde(default)]
     pub job: Option<String>,
     /// The id of the message you are replying to.
@@ -745,8 +747,9 @@ fn repo_id_of(channel: ChannelRef) -> Option<of_core::ids::RepoId> {
     }
 }
 
-/// An optional job argument, resolved (an id or an issue reference) and
-/// checked visible with its repo held, since every caller goes on to write.
+/// An optional job argument, resolved (an id or a full issue reference, as
+/// for any write) and checked visible with its repo held, since every caller
+/// goes on to write.
 async fn job_arg(
     tx: &mut otto_tenant::Tx<'_>,
     team: &of_core::teams::TeamScope,
@@ -755,7 +758,7 @@ async fn job_arg(
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let job = job_ref(tx, team, raw).await?;
+    let job = job_ref_for_write(tx, team, raw).await?;
     ensure_job_visible(tx, team, &job).await?;
     Ok(Some(job))
 }

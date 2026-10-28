@@ -2972,7 +2972,10 @@ async fn sync_ticket_requires_a_tracker_link(pool: PgPool) {
         .factory
         .sync_ticket(
             Extension(parts(&caller)),
-            Parameters(tools::jobs::JobArgs { job: id }),
+            Parameters(tools::jobs::SyncTicketArgs {
+                job: id,
+                import_blockers: false,
+            }),
         )
         .await);
 
@@ -3005,7 +3008,10 @@ async fn sync_ticket_on_a_pending_job_without_a_binding_reports_not_configured(p
         .factory
         .sync_ticket(
             Extension(parts(&caller)),
-            Parameters(tools::jobs::JobArgs { job: id }),
+            Parameters(tools::jobs::SyncTicketArgs {
+                job: id,
+                import_blockers: false,
+            }),
         )
         .await);
 
@@ -3052,7 +3058,10 @@ async fn sync_ticket_without_a_binding_reports_not_configured(pool: PgPool) {
         .factory
         .sync_ticket(
             Extension(parts(&caller)),
-            Parameters(tools::jobs::JobArgs { job: id }),
+            Parameters(tools::jobs::SyncTicketArgs {
+                job: id,
+                import_blockers: false,
+            }),
         )
         .await);
 
@@ -3121,7 +3130,10 @@ async fn sync_ticket_reports_a_missing_github_app_as_not_retriable(pool: PgPool)
         .factory
         .sync_ticket(
             Extension(parts(&caller)),
-            Parameters(tools::jobs::JobArgs { job: id }),
+            Parameters(tools::jobs::SyncTicketArgs {
+                job: id,
+                import_blockers: false,
+            }),
         )
         .await);
 
@@ -3197,7 +3209,10 @@ async fn sync_ticket_is_never_refused_while_the_org_is_blocked(pool: PgPool) {
         .factory
         .sync_ticket(
             Extension(parts(&caller)),
-            Parameters(tools::jobs::JobArgs { job: id }),
+            Parameters(tools::jobs::SyncTicketArgs {
+                job: id,
+                import_blockers: false,
+            }),
         )
         .await);
 
@@ -3270,7 +3285,10 @@ async fn sync_ticket_makes_no_status_lookup(pool: PgPool) {
         .factory
         .sync_ticket(
             Extension(parts(&caller)),
-            Parameters(tools::jobs::JobArgs { job: id }),
+            Parameters(tools::jobs::SyncTicketArgs {
+                job: id,
+                import_blockers: false,
+            }),
         )
         .await);
     assert_eq!(
@@ -3347,7 +3365,10 @@ async fn sync_ticket_reports_a_malformed_github_ticket_ref_as_non_retriable(pool
         .factory
         .sync_ticket(
             Extension(parts(&caller)),
-            Parameters(tools::jobs::JobArgs { job: id }),
+            Parameters(tools::jobs::SyncTicketArgs {
+                job: id,
+                import_blockers: false,
+            }),
         )
         .await);
 
@@ -3417,7 +3438,10 @@ async fn sync_ticket_reports_a_malformed_jira_ticket_ref_as_non_retriable(pool: 
         .factory
         .sync_ticket(
             Extension(parts(&caller)),
-            Parameters(tools::jobs::JobArgs { job: id }),
+            Parameters(tools::jobs::SyncTicketArgs {
+                job: id,
+                import_blockers: false,
+            }),
         )
         .await);
 
@@ -5975,7 +5999,7 @@ async fn the_job_lifecycle_round_trips_by_issue(pool: PgPool) {
         .update_job(
             Extension(parts(&caller)),
             Parameters(tools::jobs::UpdateJobArgs {
-                job: "#13".into(),
+                job: "acme/api#13".into(),
                 title: Some("a, retitled".into()),
                 description: None,
                 agent_type: None,
@@ -5991,7 +6015,7 @@ async fn the_job_lifecycle_round_trips_by_issue(pool: PgPool) {
         .claim_jobs(
             Extension(parts(&caller)),
             Parameters(tools::jobs::ClaimJobsArgs {
-                jobs: vec!["#13".into(), "acme/api#14".into()],
+                jobs: vec!["acme/api#13".into(), b.clone()],
                 agent: None,
                 ttl: None,
             }),
@@ -6006,7 +6030,7 @@ async fn the_job_lifecycle_round_trips_by_issue(pool: PgPool) {
         .renew_claim(
             Extension(parts(&caller)),
             Parameters(tools::jobs::RenewClaimArgs {
-                job: "#13".into(),
+                job: "acme/api#13".into(),
                 ttl: Some(600),
                 expected_attempts: None,
             }),
@@ -6019,7 +6043,7 @@ async fn the_job_lifecycle_round_trips_by_issue(pool: PgPool) {
         .complete_job(
             Extension(parts(&caller)),
             Parameters(tools::jobs::CompleteJobArgs {
-                job: "#13".into(),
+                job: "acme/api#13".into(),
                 result: Some("fixed".into()),
                 expected_attempts: None,
             }),
@@ -6033,7 +6057,7 @@ async fn the_job_lifecycle_round_trips_by_issue(pool: PgPool) {
         .fail_job(
             Extension(parts(&caller)),
             Parameters(tools::jobs::FailJobArgs {
-                job: "#14".into(),
+                job: "Acme/API#14".into(),
                 error: Some("could not reproduce".into()),
                 expected_attempts: None,
             }),
@@ -6041,6 +6065,328 @@ async fn the_job_lifecycle_round_trips_by_issue(pool: PgPool) {
         .await);
     assert_eq!(failed["job"]["id"], b.as_str());
     assert_eq!(failed["job"]["status"], "failed");
+}
+
+/// Every tool that changes a job refuses a short `#N` for the job it acts on,
+/// even when exactly one job has it, naming the forms that work. Nothing is
+/// changed and nothing is recorded.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_tool_that_changes_a_job_refuses_a_short_reference(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let id = env.add_ticketed(&caller, "only one", "acme/api#13").await;
+    let p = || Extension(parts(&caller));
+    let short = || "#13".to_string();
+
+    let refusals: Vec<(&str, ErrorData)> = vec![
+        (
+            "update_job",
+            err(env
+                .factory
+                .update_job(
+                    p(),
+                    Parameters(tools::jobs::UpdateJobArgs {
+                        job: short(),
+                        title: Some("x".into()),
+                        description: None,
+                        agent_type: None,
+                        metadata: None,
+                    }),
+                )
+                .await),
+        ),
+        (
+            "delete_job",
+            err(env
+                .factory
+                .delete_job(p(), Parameters(tools::jobs::JobArgs { job: short() }))
+                .await),
+        ),
+        (
+            "claim_jobs",
+            err(env
+                .factory
+                .claim_jobs(
+                    p(),
+                    Parameters(tools::jobs::ClaimJobsArgs {
+                        jobs: vec![short()],
+                        agent: None,
+                        ttl: None,
+                    }),
+                )
+                .await),
+        ),
+        (
+            "renew_claim",
+            err(env
+                .factory
+                .renew_claim(
+                    p(),
+                    Parameters(tools::jobs::RenewClaimArgs {
+                        job: short(),
+                        ttl: None,
+                        expected_attempts: None,
+                    }),
+                )
+                .await),
+        ),
+        (
+            "complete_job",
+            err(env
+                .factory
+                .complete_job(
+                    p(),
+                    Parameters(tools::jobs::CompleteJobArgs {
+                        job: short(),
+                        result: None,
+                        expected_attempts: None,
+                    }),
+                )
+                .await),
+        ),
+        (
+            "fail_job",
+            err(env
+                .factory
+                .fail_job(
+                    p(),
+                    Parameters(tools::jobs::FailJobArgs {
+                        job: short(),
+                        error: None,
+                        expected_attempts: None,
+                    }),
+                )
+                .await),
+        ),
+        (
+            "request_cancel",
+            err(env
+                .factory
+                .request_cancel(
+                    p(),
+                    Parameters(tools::jobs::RequestCancelArgs {
+                        job: short(),
+                        reason: None,
+                    }),
+                )
+                .await),
+        ),
+        (
+            "cancel_job",
+            err(env
+                .factory
+                .cancel_job(
+                    p(),
+                    Parameters(tools::jobs::CancelJobArgs {
+                        job: short(),
+                        note: None,
+                        expected_attempts: None,
+                    }),
+                )
+                .await),
+        ),
+        (
+            "activate_job",
+            err(env
+                .factory
+                .activate_job(p(), Parameters(tools::jobs::JobArgs { job: short() }))
+                .await),
+        ),
+        (
+            "repend_job",
+            err(env
+                .factory
+                .repend_job(p(), Parameters(tools::jobs::JobArgs { job: short() }))
+                .await),
+        ),
+        (
+            "link_ticket",
+            err(env
+                .factory
+                .link_ticket(
+                    p(),
+                    Parameters(tools::jobs::LinkTicketArgs {
+                        job: short(),
+                        tracker: Tracker::Github,
+                        ticket_ref: "acme/api#14".into(),
+                    }),
+                )
+                .await),
+        ),
+        (
+            "sync_ticket",
+            err(env
+                .factory
+                .sync_ticket(
+                    p(),
+                    Parameters(tools::jobs::SyncTicketArgs {
+                        job: short(),
+                        import_blockers: false,
+                    }),
+                )
+                .await),
+        ),
+        (
+            "acquire_lease",
+            err(env
+                .factory
+                .acquire_lease(
+                    p(),
+                    Parameters(tools::coord::AcquireLeaseArgs {
+                        resource: Some("branch:x".into()),
+                        branch: None,
+                        repo: Some("api".into()),
+                        remote: None,
+                        agent: None,
+                        job: Some(short()),
+                        ttl_seconds: None,
+                    }),
+                )
+                .await),
+        ),
+        (
+            "send_message",
+            err(env
+                .factory
+                .send_message(
+                    p(),
+                    Parameters(tools::coord::SendMessageArgs {
+                        body: "hi".into(),
+                        kind: None,
+                        repo: Some("api".into()),
+                        remote: None,
+                        team: None,
+                        job: Some(short()),
+                        in_reply_to: None,
+                        agent: None,
+                        idempotency_key: None,
+                    }),
+                )
+                .await),
+        ),
+    ];
+    for (tool, e) in refusals {
+        assert_eq!(code_of(&e), "invalid_argument", "{tool}: {}", e.message);
+        assert!(
+            e.message.contains("can match an issue in any repo")
+                && e.message.contains("owner/repo#13")
+                && e.message.contains("get_job(\"#13\")"),
+            "{tool}: {}",
+            e.message
+        );
+    }
+
+    // Nothing changed: the job is still pending, untitled anew and undeleted.
+    let job = ok(env.get_job_by(&caller, &id).await);
+    assert_eq!(job["job"]["status"], "pending");
+    assert_eq!(job["job"]["title"], "only one");
+    // A read keeps the short form.
+    ok(env.get_job_by(&caller, "#13").await);
+}
+
+/// A short dependency in set_dependencies is an issue of the job's own repo,
+/// so another repo's #14 is never picked up; a job without a full ticketRef
+/// needs the full form.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_short_dependency_reads_in_the_jobs_own_repo(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let a = env.add_ticketed(&caller, "a", "acme/api#13").await;
+    let api14 = env.add_ticketed(&caller, "api 14", "acme/api#14").await;
+    env.add_ticketed(&caller, "web 14", "acme/web#14").await;
+    let set = |job: &str, add: &str| {
+        env.factory.set_dependencies(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::SetDependenciesArgs {
+                job: job.into(),
+                add: vec![add.into()],
+                remove: vec![],
+            }),
+        )
+    };
+
+    // Org-wide, "#14" is two jobs; relative to a's repo it is one.
+    let deps = ok(set(&a, "#14").await);
+    assert_eq!(deps["dependencies"], serde_json::json!([api14]));
+
+    let bare = env.add_job(&caller, "no issue").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let e = err(set(&bare, "#14").await);
+    assert_eq!(code_of(&e), "invalid_argument");
+    assert!(
+        e.message.contains(&format!("{bare} has no ticketRef")),
+        "{}",
+        e.message
+    );
+    assert!(e.message.contains("owner/repo#14"), "{}", e.message);
+    ok(set(&bare, "acme/api#14").await);
+}
+
+/// add_job's dependsOn reads a short `#N` in the repo's bound GitHub repo,
+/// and refuses it in a repo with no GitHub binding.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn add_job_reads_a_short_dependency_in_the_bound_repo(pool: PgPool) {
+    let (env, caller, _gh) = github_env(pool).await;
+    let api14 = env.add_ticketed(&caller, "api 14", "acme/api#14").await;
+    env.add_ticketed(&caller, "web 14", "acme/web#14").await;
+    let add = |depends_on: &str| {
+        env.factory.add_job(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::AddJobArgs {
+                title: "after #14".into(),
+                description: None,
+                repo: Some("api".into()),
+                remote: None,
+                ticket_ref: None,
+                agent_type: None,
+                metadata: None,
+                depends_on: vec![depends_on.into()],
+                idempotency_key: None,
+            }),
+        )
+    };
+    let job = ok(add("#14").await);
+    let id = job["job"]["id"].as_str().unwrap().to_string();
+    let deps = ok(env
+        .factory
+        .set_dependencies(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::SetDependenciesArgs {
+                job: id,
+                add: vec![api14.clone()],
+                remove: vec![],
+            }),
+        )
+        .await);
+    assert_eq!(deps["dependencies"], serde_json::json!([api14]));
+}
+
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn add_job_refuses_a_short_dependency_without_a_github_binding(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    env.add_ticketed(&caller, "first", "acme/api#13").await;
+    let e = err(env
+        .factory
+        .add_job(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::AddJobArgs {
+                title: "after #13".into(),
+                description: None,
+                repo: Some("api".into()),
+                remote: None,
+                ticket_ref: None,
+                agent_type: None,
+                metadata: None,
+                depends_on: vec!["#13".into()],
+                idempotency_key: None,
+            }),
+        )
+        .await);
+    assert_eq!(code_of(&e), "invalid_argument");
+    assert!(e.message.contains("no GitHub binding"), "{}", e.message);
 }
 
 #[sqlx::test(migrations = "../of-core/migrations")]
@@ -6061,7 +6407,7 @@ async fn add_job_depends_on_an_issue(pool: PgPool) {
                 ticket_ref: None,
                 agent_type: None,
                 metadata: None,
-                depends_on: vec!["#13".into()],
+                depends_on: vec!["acme/api#13".into()],
                 idempotency_key: None,
             }),
         )
@@ -6099,7 +6445,7 @@ async fn an_add_job_replay_matches_on_the_resolved_dependency(pool: PgPool) {
     };
     let first = ok(env
         .factory
-        .add_job(Extension(parts(&caller)), Parameters(args("#13")))
+        .add_job(Extension(parts(&caller)), Parameters(args("acme/api#13")))
         .await);
     let second = ok(env
         .factory
@@ -6124,7 +6470,7 @@ async fn a_lease_taken_for_an_issue_records_and_shows_its_job(pool: PgPool) {
                 repo: Some("api".into()),
                 remote: None,
                 agent: None,
-                job: Some("#13".into()),
+                job: Some("acme/api#13".into()),
                 ttl_seconds: None,
             }),
         )
@@ -6162,7 +6508,10 @@ async fn send_message_resolves_an_issue_and_replays_across_spellings(pool: PgPoo
 
     let unkeyed = ok(env
         .factory
-        .send_message(Extension(parts(&caller)), Parameters(args("#13", None)))
+        .send_message(
+            Extension(parts(&caller)),
+            Parameters(args("acme/api#13", None)),
+        )
         .await);
     assert_eq!(unkeyed["message"]["jobId"], id.as_str());
 
@@ -6170,7 +6519,7 @@ async fn send_message_resolves_an_issue_and_replays_across_spellings(pool: PgPoo
         .factory
         .send_message(
             Extension(parts(&caller)),
-            Parameters(args("#13", Some("retry-1"))),
+            Parameters(args("acme/api#13", Some("retry-1"))),
         )
         .await);
     assert_eq!(first["message"]["jobId"], id.as_str());
@@ -6287,11 +6636,21 @@ async fn sync_ticket_accepts_an_issue_reference(pool: PgPool) {
     let sync = |job: &str| {
         env.factory.sync_ticket(
             Extension(parts(&caller)),
-            Parameters(tools::jobs::JobArgs { job: job.into() }),
+            Parameters(tools::jobs::SyncTicketArgs {
+                job: job.into(),
+                import_blockers: false,
+            }),
         )
     };
     let by_id = err(sync(&id).await);
-    let by_issue = err(sync("#13").await);
+    let by_issue = err(sync("acme/api#13").await);
+    let short = err(sync("#13").await);
+    assert_eq!(code_of(&short), "invalid_argument");
+    assert!(
+        short.message.contains("can match an issue in any repo"),
+        "{}",
+        short.message
+    );
 
     assert_eq!(code_of(&by_issue), "invalid_argument");
     assert!(
@@ -6322,7 +6681,7 @@ async fn an_unresolved_issue_reference_records_no_usage(pool: PgPool) {
         .complete_job(
             Extension(parts(&caller)),
             Parameters(tools::jobs::CompleteJobArgs {
-                job: "#999".into(),
+                job: "acme/api#999".into(),
                 result: None,
                 expected_attempts: None,
             }),
@@ -6346,7 +6705,8 @@ const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQE
 
 const INSTALLATION: &str = "777";
 
-/// A GitHub that answers what `sync_ticket` asks of it, for `acme/api` only:
+/// A GitHub that answers what `sync_ticket` asks of it, for `acme/api` only (in
+/// any case):
 /// installation tokens, issues (body and `updated_at`, as set by a test), and
 /// comments, which it records. A test can make every issue read or every
 /// comment fail with a status of its choosing, and `hits` counts every request
@@ -6355,15 +6715,15 @@ const INSTALLATION: &str = "777";
 struct MockGithub {
     issues: Arc<std::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>>,
     comments: Arc<std::sync::Mutex<Vec<(u64, String)>>>,
-    issue_status: Arc<std::sync::Mutex<Option<u16>>>,
+    issue_status: Arc<std::sync::Mutex<Option<(u16, String)>>>,
     comment_status: Arc<std::sync::Mutex<Option<u16>>>,
     hits: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-fn status_reply(code: u16) -> (http::StatusCode, axum::Json<serde_json::Value>) {
+fn status_reply(code: u16, message: &str) -> (http::StatusCode, axum::Json<serde_json::Value>) {
     (
         http::StatusCode::from_u16(code).unwrap(),
-        axum::Json(serde_json::json!({ "message": "mock failure" })),
+        axum::Json(serde_json::json!({ "message": message })),
     )
 }
 
@@ -6390,10 +6750,11 @@ impl MockGithub {
             Path((owner, repo, n)): Path<(String, String, u64)>,
         ) -> (http::StatusCode, axum::Json<serde_json::Value>) {
             gh.hit();
-            if let Some(code) = *gh.issue_status.lock().unwrap() {
-                return status_reply(code);
+            if let Some((code, message)) = gh.issue_status.lock().unwrap().clone() {
+                return status_reply(code, &message);
             }
-            let found = (owner == "acme" && repo == "api")
+            // GitHub's owner and repo names are case-insensitive.
+            let found = (owner.eq_ignore_ascii_case("acme") && repo.eq_ignore_ascii_case("api"))
                 .then(|| gh.issues.lock().unwrap().get(&n).cloned())
                 .flatten();
             match found {
@@ -6411,7 +6772,7 @@ impl MockGithub {
         ) -> (http::StatusCode, axum::Json<serde_json::Value>) {
             gh.hit();
             if let Some(code) = *gh.comment_status.lock().unwrap() {
-                return status_reply(code);
+                return status_reply(code, "mock failure");
             }
             gh.comments
                 .lock()
@@ -6457,7 +6818,11 @@ impl MockGithub {
     }
 
     fn fail_issue_reads_with(&self, code: u16) {
-        *self.issue_status.lock().unwrap() = Some(code);
+        self.fail_issue_reads_saying(code, "mock failure");
+    }
+
+    fn fail_issue_reads_saying(&self, code: u16, message: &str) {
+        *self.issue_status.lock().unwrap() = Some((code, message.into()));
     }
 
     fn fail_comments_with(&self, code: u16) {
@@ -6523,11 +6888,25 @@ impl Env {
         id
     }
 
+    /// `sync_ticket` with `importBlockers: true`, the way these tests mostly
+    /// call it.
     async fn sync(&self, caller: &Principal, job: &str) -> Result<serde_json::Value, ErrorData> {
+        self.sync_importing(caller, job, true).await
+    }
+
+    async fn sync_importing(
+        &self,
+        caller: &Principal,
+        job: &str,
+        import_blockers: bool,
+    ) -> Result<serde_json::Value, ErrorData> {
         self.factory
             .sync_ticket(
                 Extension(parts(caller)),
-                Parameters(tools::jobs::JobArgs { job: job.into() }),
+                Parameters(tools::jobs::SyncTicketArgs {
+                    job: job.into(),
+                    import_blockers,
+                }),
             )
             .await
             .map(|j| serde_json::to_value(j.0).unwrap())
@@ -6683,8 +7062,8 @@ async fn sync_ticket_reports_a_missing_issue_as_not_retriable(pool: PgPool) {
     assert!(outbox_rows(&env, "sync_ticket").await.is_empty());
 }
 
-/// A 5xx or a 429 on the read is GitHub having a bad moment, worth retrying;
-/// a 401, 403 or 422 is not.
+/// A 5xx, a 429 or a 403 that says it is a rate limit is GitHub having a bad
+/// moment, worth retrying; a 401, any other 403, or a 422 is not.
 #[sqlx::test(migrations = "../of-core/migrations")]
 async fn sync_ticket_says_which_failed_issue_reads_are_worth_retrying(pool: PgPool) {
     let (env, caller, gh) = github_env(pool).await;
@@ -6709,6 +7088,124 @@ async fn sync_ticket_says_which_failed_issue_reads_are_worth_retrying(pool: PgPo
             e.message
         );
     }
+
+    // GitHub's own wording for its primary and secondary limits.
+    for message in [
+        "API rate limit exceeded for installation ID 777.",
+        "You have exceeded a secondary rate limit. Please wait a few minutes.",
+    ] {
+        gh.fail_issue_reads_saying(403, message);
+        let e = env.sync(&caller, &me).await.unwrap_err();
+        assert_eq!(code_of(&e), "tracker_sync_failed", "{message}");
+        assert_eq!(e.data.as_ref().unwrap()["retriable"], true, "{message}");
+    }
+}
+
+/// The write-back is classified the same way as the read: a rate-limited 403
+/// on the comment is worth retrying, a plain 403 or a 404 is not.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_says_which_failed_write_backs_are_worth_retrying(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    gh.set_issue(13, "No blockers.", LONG_AGO);
+    env.claim(&caller, &me, "agent-one").await;
+
+    for (status, retriable) in [(502, true), (429, true), (403, false), (404, false)] {
+        gh.fail_comments_with(status);
+        let e = env.sync(&caller, &me).await.unwrap_err();
+        assert_eq!(code_of(&e), "tracker_sync_failed", "{status}");
+        assert_eq!(
+            e.data.as_ref().unwrap()["retriable"],
+            retriable,
+            "{status}: {}",
+            e.message
+        );
+    }
+}
+
+/// A ticketRef naming a repository other than the bound one is refused before
+/// any token is minted: GitHub sees no request at all.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_refuses_a_ticket_ref_outside_the_bound_repo(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "elsewhere", "other/secret#13").await;
+
+    let e = env.sync(&caller, &me).await.unwrap_err();
+    assert_eq!(code_of(&e), "invalid_argument", "{}", e.message);
+    assert!(
+        e.message.contains("names other/secret")
+            && e.message.contains("binding is acme/api")
+            && e.message.contains("link_ticket"),
+        "{}",
+        e.message
+    );
+    assert_eq!(gh.hits(), 0, "no request was made");
+    assert!(outbox_rows(&env, "sync_ticket").await.is_empty());
+
+    // The bound repository's name in any case is the same repository.
+    let ok_case = env.linked(&caller, "same repo", "Acme/API#13").await;
+    gh.set_issue(13, "No blockers.", LONG_AGO);
+    env.sync(&caller, &ok_case).await.unwrap();
+}
+
+/// The automatic write-back after a transition skips a ticketRef outside the
+/// bound repo the same way, without failing the transition.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn the_automatic_write_back_skips_a_ticket_ref_outside_the_bound_repo(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "elsewhere", "other/secret#13").await;
+
+    let claimed = env.claim(&caller, &me, "agent-one").await;
+    assert_eq!(claimed["jobs"][0]["status"], "in-progress", "{claimed}");
+    assert_eq!(gh.hits(), 0, "no request was made");
+    assert!(gh.comments().is_empty());
+
+    // The same transition on a job in the bound repo does post.
+    let bound = env.linked(&caller, "bound", "acme/api#14").await;
+    env.claim(&caller, &bound, "agent-one").await;
+    assert_eq!(gh.comments(), [(14, "Claimed by agent-one.".to_string())]);
+}
+
+/// A "Blocked by" line naming another repository is reported as other_repo and
+/// nothing is written, even when exactly one job you can see has that issue.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_reports_a_blocker_in_another_repo(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    env.add_ticketed(&caller, "elsewhere", "acme/web#5").await;
+    let same = env.add_ticketed(&caller, "same repo", "acme/api#6").await;
+    gh.set_issue(13, "Blocked by acme/web#5 and #6", LONG_AGO);
+
+    let out = env.sync(&caller, &me).await.unwrap();
+
+    assert_eq!(
+        out["blockers"],
+        serde_json::json!([
+            { "ticketRef": "acme/web#5", "outcome": "other_repo", "jobs": [] },
+            { "ticketRef": "acme/api#6", "outcome": "added", "jobs": [same] },
+        ])
+    );
+    assert_eq!(env.blocked_ids(&caller).await, vec![me]);
+}
+
+/// Without importBlockers the issue is still read and drift recorded, but no
+/// "Blocked by" line is followed.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_imports_blockers_only_when_asked(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    env.add_ticketed(&caller, "the blocker", "acme/api#14")
+        .await;
+    let later = (chrono::Utc::now() + chrono::Duration::minutes(5))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    gh.set_issue(13, "Blocked by #14", &later);
+
+    let out = env.sync_importing(&caller, &me, false).await.unwrap();
+
+    assert_eq!(out["blockers"], serde_json::json!([]), "{out}");
+    assert_eq!(out["blockersImported"], false, "{out}");
+    assert_eq!(out["job"]["ticketStale"], true, "{out}");
+    assert!(env.blocked_ids(&caller).await.is_empty());
 }
 
 /// A stored ticket_ref whose owner or repo is not a single path segment is
@@ -6771,10 +7268,11 @@ async fn a_failed_write_back_keeps_the_dependencies_it_followed(pool: PgPool) {
     );
 }
 
-/// Adding a dependency is a job write. A token with `trackers` alone still
-/// reads the issue and records drift, but adds no dependency.
+/// Adding a dependency is a job write. A token with `trackers` alone that asks
+/// for the import is refused outright, before anything is sent; one that does
+/// not ask still reads the issue and records drift.
 #[sqlx::test(migrations = "../of-core/migrations")]
-async fn a_trackers_only_token_records_drift_but_adds_no_dependency(pool: PgPool) {
+async fn a_trackers_only_token_cannot_import_blockers(pool: PgPool) {
     let (env, caller, gh) = github_env(pool).await;
     let me = env.linked(&caller, "the work", "acme/api#13").await;
     env.add_ticketed(&caller, "the blocker", "acme/api#14")
@@ -6788,7 +7286,14 @@ async fn a_trackers_only_token_records_drift_but_adds_no_dependency(pool: PgPool
         vec![of_core::scopes::TRACKERS.to_string()],
     );
 
-    let out = env.sync(&trackers_only, &me).await.unwrap();
+    let e = env.sync(&trackers_only, &me).await.unwrap_err();
+    assert_eq!(code_of(&e), "insufficient_scope", "{}", e.message);
+    assert_eq!(gh.hits(), 0, "refused before anything was sent");
+
+    let out = env
+        .sync_importing(&trackers_only, &me, false)
+        .await
+        .unwrap();
 
     assert_eq!(out["blockers"], serde_json::json!([]), "{out}");
     assert_eq!(out["blockersImported"], false, "{out}");
@@ -6852,4 +7357,17 @@ async fn sync_ticket_still_refuses_a_pending_jira_job(pool: PgPool) {
     let e = env.sync(&caller, &id).await.unwrap_err();
     assert_eq!(code_of(&e), "invalid_argument");
     assert!(e.message.contains("pending"), "{}", e.message);
+
+    // Claimed, it has something to post, but this server has no JIRA app
+    // configured: configuration, not an outage, so not worth retrying.
+    env.claim(&caller, &id, "agent-one").await;
+    let e = env.sync(&caller, &id).await.unwrap_err();
+    assert_eq!(code_of(&e), "tracker_sync_failed");
+    assert_eq!(
+        e.data.as_ref().unwrap()["retriable"],
+        false,
+        "{}",
+        e.message
+    );
+    assert!(e.message.contains("missing client id"), "{}", e.message);
 }

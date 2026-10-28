@@ -1413,7 +1413,7 @@ async fn add_ticket_dependencies_reports_each_reference(pool: PgPool) {
     .collect();
     let mut tx = db.begin(t.org).await.unwrap();
     let got = tx
-        .add_ticket_dependencies(&me, &refs, &TeamScope::All)
+        .add_ticket_dependencies(&me, "acme/api", &refs, &TeamScope::All)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -1440,7 +1440,7 @@ async fn add_ticket_dependencies_reports_each_reference(pool: PgPool) {
 
     // Again: what is already there says so and writes nothing new.
     let again = tx
-        .add_ticket_dependencies(&me, &[query("acme/api#2")], &TeamScope::All)
+        .add_ticket_dependencies(&me, "acme/api", &[query("acme/api#2")], &TeamScope::All)
         .await
         .unwrap();
     assert_eq!(
@@ -1463,7 +1463,7 @@ async fn add_ticket_dependencies_never_crosses_orgs(pool: PgPool) {
 
     let mut tx = db.begin(a.org).await.unwrap();
     let got = tx
-        .add_ticket_dependencies(&me, &[query("acme/api#5")], &TeamScope::All)
+        .add_ticket_dependencies(&me, "acme/api", &[query("acme/api#5")], &TeamScope::All)
         .await
         .unwrap();
     assert_eq!(got, vec![outcome(BlockerKind::NoJob, "acme/api#5", &[])]);
@@ -1480,21 +1480,22 @@ async fn add_ticket_dependencies_respects_the_team_scope(pool: PgPool) {
     let team = TeamId::from(uuid::Uuid::new_v4());
     let hidden_repo = second_repo(&db, &t, "web", Some(team)).await;
     let me = ticketed(&db, &t, t.repo, "me", "acme/api#1").await;
-    let hidden = ticketed(&db, &t, hidden_repo, "hidden", "acme/web#5").await;
+    // The same GitHub repository's issue, queued in a repo of a hidden team.
+    let hidden = ticketed(&db, &t, hidden_repo, "hidden", "acme/api#5").await;
 
     let outsider = TeamScope::Teams(Default::default());
     let insider = TeamScope::Teams([team].into_iter().collect());
 
     let mut tx = db.begin(t.org).await.unwrap();
     let got = tx
-        .add_ticket_dependencies(&me, &[query("acme/web#5")], &outsider)
+        .add_ticket_dependencies(&me, "acme/api", &[query("acme/api#5")], &outsider)
         .await
         .unwrap();
-    assert_eq!(got, vec![outcome(BlockerKind::NoJob, "acme/web#5", &[])]);
+    assert_eq!(got, vec![outcome(BlockerKind::NoJob, "acme/api#5", &[])]);
     assert!(tx.dependencies_of(&me).await.unwrap().is_empty());
 
     let err = tx
-        .add_ticket_dependencies(&hidden, &[query("acme/api#1")], &outsider)
+        .add_ticket_dependencies(&hidden, "acme/api", &[query("acme/api#1")], &outsider)
         .await
         .unwrap_err();
     assert_eq!(err.code(), "job_not_found");
@@ -1504,12 +1505,246 @@ async fn add_ticket_dependencies_respects_the_team_scope(pool: PgPool) {
     // the scope's doing.
     let mut tx = db.begin(t.org).await.unwrap();
     let got = tx
-        .add_ticket_dependencies(&me, &[query("acme/web#5")], &insider)
+        .add_ticket_dependencies(&me, "acme/api", &[query("acme/api#5")], &insider)
         .await
         .unwrap();
     assert_eq!(
         got,
-        vec![outcome(BlockerKind::Added, "acme/web#5", &[&hidden])]
+        vec![outcome(BlockerKind::Added, "acme/api#5", &[&hidden])]
     );
+    tx.commit().await.unwrap();
+}
+
+/// A blocker in another repository is `other_repo`: never looked up, never
+/// written, never named, even when exactly one visible job carries it. The
+/// home repo compares case-insensitively.
+#[sqlx::test]
+async fn add_ticket_dependencies_only_follows_the_issues_own_repo(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let me = ticketed(&db, &t, t.repo, "me", "acme/api#1").await;
+    ticketed(&db, &t, t.repo, "elsewhere", "acme/web#5").await;
+    let same = ticketed(&db, &t, t.repo, "same repo", "acme/api#6").await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let got = tx
+        .add_ticket_dependencies(
+            &me,
+            "Acme/API",
+            &[query("acme/web#5"), query("acme/api#6")],
+            &TeamScope::All,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        got,
+        vec![
+            outcome(BlockerKind::OtherRepo, "acme/web#5", &[]),
+            outcome(BlockerKind::Added, "acme/api#6", &[&same]),
+        ]
+    );
+    assert_eq!(tx.dependencies_of(&me).await.unwrap(), vec![same]);
+    tx.commit().await.unwrap();
+}
+
+/// Two dependency writes in one org run one at a time. Transaction 1 adds
+/// A→B and holds; transaction 2's B→A waits for it, and once 1 commits, 2's
+/// cycle check sees A→B and refuses. Without the lock, 2 would check before
+/// 1 committed, see no path, and both edges would land: a loop.
+#[sqlx::test]
+async fn concurrent_dependency_writes_cannot_close_a_loop(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let a = ticketed(&db, &t, t.repo, "a", "acme/api#1").await;
+    let b = ticketed(&db, &t, t.repo, "b", "acme/api#2").await;
+
+    let mut first = db.begin(t.org).await.unwrap();
+    first
+        .set_dependencies(&a, std::slice::from_ref(&b), &[])
+        .await
+        .unwrap();
+
+    let second = {
+        let db = db.clone();
+        let (a, b, org) = (a.clone(), b.clone(), t.org);
+        tokio::spawn(async move {
+            let mut tx = db.begin(org).await.unwrap();
+            let got = tx.set_dependencies(&b, std::slice::from_ref(&a), &[]).await;
+            if got.is_ok() {
+                tx.commit().await.unwrap();
+            }
+            got
+        })
+    };
+    // Still waiting on the lock: it has not finished in this long.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !second.is_finished(),
+        "the second write ran without waiting"
+    );
+
+    first.commit().await.unwrap();
+    let got = tokio::time::timeout(std::time::Duration::from_secs(10), second)
+        .await
+        .expect("the second write finishes once the first commits")
+        .unwrap();
+    assert!(matches!(got, Err(Error::DependencyCycle(..))), "{got:?}");
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    assert_eq!(tx.dependencies_of(&a).await.unwrap(), vec![b.clone()]);
+    assert!(tx.dependencies_of(&b).await.unwrap().is_empty());
+    tx.commit().await.unwrap();
+
+    // The blocker import queues on the same lock.
+    let mut first = db.begin(t.org).await.unwrap();
+    first
+        .set_dependencies(&a, &[], std::slice::from_ref(&b))
+        .await
+        .unwrap();
+    first
+        .set_dependencies(&b, std::slice::from_ref(&a), &[])
+        .await
+        .unwrap();
+    let second = {
+        let db = db.clone();
+        let (a, org) = (a.clone(), t.org);
+        tokio::spawn(async move {
+            let mut tx = db.begin(org).await.unwrap();
+            let got = tx
+                .add_ticket_dependencies(&a, "acme/api", &[query("acme/api#2")], &TeamScope::All)
+                .await;
+            tx.commit().await.unwrap();
+            got
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!second.is_finished(), "the import ran without waiting");
+    first.commit().await.unwrap();
+    let got = tokio::time::timeout(std::time::Duration::from_secs(10), second)
+        .await
+        .expect("the import finishes once the first commits")
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, vec![outcome(BlockerKind::Cycle, "acme/api#2", &[&b])]);
+}
+
+// ------------------------------------------- references on tools that write
+
+/// A write takes a job id or a full reference; a short `#N` is refused before
+/// any lookup, naming the forms that work, even when exactly one job has it.
+#[sqlx::test]
+async fn a_write_refuses_a_short_reference(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let id = ticketed(&db, &t, t.repo, "only one", "acme/api#13").await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let e = tx
+        .resolve_job_ref_for_write("#13", &TeamScope::All)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "invalid_argument");
+    let msg = e.to_string();
+    assert!(msg.contains("owner/repo#13"), "{msg}");
+    assert!(msg.contains("list_jobs(ticket=\"#13\")"), "{msg}");
+
+    for raw in ["acme/api#13", id.0.as_str()] {
+        assert_eq!(
+            tx.resolve_job_ref_for_write(raw, &TeamScope::All)
+                .await
+                .unwrap(),
+            id,
+            "{raw}"
+        );
+    }
+    let e = tx
+        .resolve_job_refs_for_write(&["acme/api#13".into(), "#13".into()], &TeamScope::All)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "invalid_argument");
+    tx.commit().await.unwrap();
+}
+
+/// A dependency's short `#N` is issue N of the home repo, not of any repo;
+/// with no home it is refused with the reason given.
+#[sqlx::test]
+async fn a_short_dependency_reads_in_the_home_repo(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let api = ticketed(&db, &t, t.repo, "api 14", "acme/api#14").await;
+    ticketed(&db, &t, t.repo, "web 14", "acme/web#14").await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let got = tx
+        .resolve_dependency_refs(&["#14".into()], Some("Acme/API"), "unused", &TeamScope::All)
+        .await
+        .unwrap();
+    assert_eq!(got, vec![api.clone()]);
+
+    // Org-wide, the same `#14` is ambiguous; a full reference is never re-read.
+    let got = tx
+        .resolve_dependency_refs(
+            &["acme/web#14".into(), api.0.clone()],
+            Some("acme/api"),
+            "unused",
+            &TeamScope::All,
+        )
+        .await
+        .unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[1], api);
+
+    let e = tx
+        .resolve_dependency_refs(
+            &["#14".into()],
+            None,
+            "job-9 has no ticketRef of the form owner/repo#N",
+            &TeamScope::All,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "invalid_argument");
+    let msg = e.to_string();
+    assert!(msg.contains("job-9 has no ticketRef"), "{msg}");
+    assert!(msg.contains("owner/repo#14"), "{msg}");
+    tx.commit().await.unwrap();
+}
+
+/// `lock_job_visible` holds the job's row: a relink of the job waits for the
+/// holder to finish rather than committing under it.
+#[sqlx::test]
+async fn lock_job_visible_makes_a_relink_wait(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let id = ticketed(&db, &t, t.repo, "linked", "acme/api#13").await;
+
+    let mut holder = db.begin(t.org).await.unwrap();
+    let job = holder.lock_job_visible(&id, &TeamScope::All).await.unwrap();
+    assert_eq!(job.ticket_ref.as_deref(), Some("acme/api#13"));
+
+    let relink = {
+        let (db, id, org) = (db.clone(), id.clone(), t.org);
+        tokio::spawn(async move {
+            let mut tx = db.begin(org).await.unwrap();
+            tx.link_ticket(&id, Tracker::Github, "acme/api#99")
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!relink.is_finished(), "the relink did not wait");
+    holder.commit().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), relink)
+        .await
+        .expect("the relink finishes once the holder commits")
+        .unwrap();
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let e = tx
+        .lock_job_visible(&JobId::from("job-999"), &TeamScope::All)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "job_not_found");
     tx.commit().await.unwrap();
 }

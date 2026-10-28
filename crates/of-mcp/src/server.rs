@@ -95,7 +95,8 @@ pub struct TrackerSyncConfig {
     pub github_app_private_key: Option<String>,
     /// Where GitHub's REST API is, when it is not `https://api.github.com`:
     /// a mock GitHub in tests. No environment variable sets it, so a
-    /// deployment always talks to the real one.
+    /// deployment always talks to the real one. Tests only.
+    #[doc(hidden)]
     pub github_api_base: Option<String>,
     pub jira_client_id: Option<String>,
     pub jira_client_secret: Option<String>,
