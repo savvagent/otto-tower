@@ -10,7 +10,7 @@ it exactly.
 
 ## Status — 2026-10-28
 
-🚧 Tasks 1–4 implemented on `mcp/jobs-by-issue`, each through spec-compliance and code-quality review; PR pending. Review-round additions: issue edits keep a comment's stale mark, `Changed` does not advance `remote_revision`, GitHub ref segments validated before any outbound call, blockers imported only with `jobs:write` (`blockersImported`), honest retriability on the issue read.
+✅ Shipped in PR #260 (squash 5449924), closing savvagent/otto-factory#257 and #258. All four tasks are done. Review rounds added: issue edits keep a comment's stale mark; `Changed` does not advance `remote_revision` and marks only a job still linked to the commented issue; GitHub ref segments are validated, and must match the repo's binding, before any outbound call; the "Blocked by" import is opt-in (`importBlockers`), same-repo only (`other_repo`) and needs `jobs:write` (`blockersImported`); write tools refuse a bare `#N`, except `set_dependencies`' own job, with short dependency refs read in the job's repo; retriability tracks whether a retry can succeed; dependency writes are serialized per org; the syncing job's row is locked `FOR NO KEY UPDATE`. Follow-up: #259.
 
 ## Global Constraints
 
@@ -62,7 +62,7 @@ inbound). Task 4 extends `sync_ticket` with the pull, which needs both Task 1's 
 Task 3's `note_ticket_changed` (§4 and the §5 pull signal). Each task leaves the workspace
 green.
 
-## Task 1 — References and resolution in `of-core` 🚧
+## Task 1 — References and resolution in `of-core` ✅
 
 **Files:** `ticket_ref.rs` (create), `lib.rs`, `error.rs`, `jobs.rs`, `leases.rs`,
 `crates/of-web/src/error.rs`, `crates/of-core/tests/jobs.rs`, `crates/of-core/tests/isolation.rs`.
@@ -111,7 +111,7 @@ green.
 - [ ] Format and commit: `cargo fmt --all` then
       `git commit -m "feat(of-core): resolve jobs by their issue reference"`.
 
-## Task 2 — The MCP surface 🚧
+## Task 2 — The MCP surface ✅
 
 **Files:** `crates/of-mcp/src/tools/{mod,jobs,coord}.rs`, `crates/of-mcp/tests/tools.rs`.
 **Interfaces:** consumes Task 1. Produces `tools::job_ref`/`job_refs` and `ListJobsArgs.ticket`.
@@ -154,7 +154,7 @@ green.
       clippy. Both pass.
 - [ ] Format and commit: `git commit -m "feat(of-mcp): accept an issue reference wherever a job id is accepted"`.
 
-## Task 3 — The drift marker, and the webhook signal 🚧
+## Task 3 — The drift marker, and the webhook signal ✅
 
 **Files:** `0009_job_ticket_drift.sql` (create), `crates/of-core/src/jobs.rs`,
 `crates/of-trackers/src/{webhook,sync}.rs`, `crates/of-trackers/tests/sync.rs` (it builds a
@@ -198,7 +198,7 @@ green.
       must be updated.)
 - [ ] Format and commit: `git commit -m "feat(of-core): mark a job stale when its issue changes after it was written"`.
 
-## Task 4 — `sync_ticket` reads "Blocked by" and drift 🚧
+## Task 4 — `sync_ticket` reads "Blocked by" and drift ✅
 
 **Files:** `crates/of-trackers/src/{sync,github}.rs`, `crates/of-core/src/jobs.rs`,
 `crates/of-mcp/src/{server,lib}.rs`, `crates/of-mcp/src/tools/{jobs,out}.rs`,
