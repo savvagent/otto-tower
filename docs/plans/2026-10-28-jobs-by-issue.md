@@ -10,7 +10,7 @@ it exactly.
 
 ## Status — 2026-10-28
 
-✅ Shipped in PR #260 (squash 5449924), closing savvagent/otto-factory#257 and #258. All four tasks are done. Review rounds added: issue edits keep a comment's stale mark; `Changed` does not advance `remote_revision` and marks only a job still linked to the commented issue; GitHub ref segments are validated, and must match the repo's binding, before any outbound call; the "Blocked by" import is opt-in (`importBlockers`), same-repo only (`other_repo`) and needs `jobs:write` (`blockersImported`); write tools refuse a bare `#N`, except `set_dependencies`' own job, with short dependency refs read in the job's repo; retriability tracks whether a retry can succeed; dependency writes are serialized per org; the syncing job's row is locked `FOR NO KEY UPDATE`. Follow-up: #259.
+✅ Shipped in PR #260 (squash 5449924), closing savvagent/otto-factory#257 and #258. All four tasks are done; the schema change is migration `0009_job_ticket_drift.sql` (two nullable columns on `jobs`). Review rounds added: issue edits keep a comment's stale mark; `Changed` does not advance `remote_revision` and marks only a job still linked to the commented issue; GitHub ref segments are validated, and must match the repo's binding, before any outbound call; the "Blocked by" import is opt-in (`importBlockers`), same-repo only (`other_repo`) and needs `jobs:write` (`blockersImported`); write tools refuse a bare `#N`, except `set_dependencies`' own job, with short dependency refs read in the job's repo; retriability tracks whether a retry can succeed; dependency writes are serialized per org; the syncing job's row is locked `FOR NO KEY UPDATE`. Follow-up: #259.
 
 ## Global Constraints
 

@@ -2,7 +2,7 @@
 
 > **Status:** IMPLEMENTED (PR #260, 2026-10-28; merged as 5449924). Agents can name a job by its issue wherever
 > they can name it by id: `#928` or `owner/repo#928` on reads, `owner/repo#928` on tools that change
-> a job. `list_jobs` gains a `ticket` filter, `list_leases` shows each lease's job's `ticketRef`,
+> a job. `list_jobs` gains a `ticket` filter, `list_leases` shows each lease's `jobTicketRef`,
 > `sync_ticket(importBlockers: true)` turns "Blocked by #N" into a dependency, and a job whose
 > issue has drifted carries `ticketStale`. Additive only: no tool, field or route is renamed or
 > removed. Closes savvagent/otto-factory#257 and savvagent/otto-factory#258.
