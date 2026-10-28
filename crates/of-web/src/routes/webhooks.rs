@@ -347,8 +347,8 @@ async fn apply(
                                     // against `ticket_changed_at`), and two
                                     // deliveries racing past it are still
                                     // harmless: `note_ticket_changed_if_linked`
-                                    // keeps the later time, so applying one
-                                    // twice is the same as once.
+                                    // keeps the later time, so applying the
+                                    // same comment twice is the same as once.
                                     //
                                     // `existing` was read unlocked, so the
                                     // mark is conditional on the job still

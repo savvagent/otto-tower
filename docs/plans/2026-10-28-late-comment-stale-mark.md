@@ -10,7 +10,7 @@ implements it exactly.
 
 ## Status — 2026-10-28
 
-⬜ Not started.
+🚧 Implemented on `fix/late-comment-stale-mark`, in review.
 
 ## Global Constraints
 
@@ -38,7 +38,7 @@ implements it exactly.
 One task: the decision change and both test layers are one behaviour, and the webhook route
 needs no code change.
 
-## Task 1 — Guard comment webhooks by `ticket_changed_at` ⬜
+## Task 1 — Guard comment webhooks by `ticket_changed_at` 🚧
 
 **Files:** the four above.
 **Interfaces:** consumes `Job::ticket_changed_at` (already on `Job`); produces no new interface.
