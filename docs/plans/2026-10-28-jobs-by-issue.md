@@ -250,7 +250,8 @@ green.
       refusal (spec §4: JIRA has no read path here), with a test.
 - [ ] Restructure `sync_ticket`: the pending refusal (`jobs.rs:1496`) moves **after** the binding
       lookup (`jobs.rs:1536`) and applies only to a JIRA job. A pending GitHub job continues to the
-      read below.
+      read below. The `(transition, detail)` match (`jobs.rs:1495`) moves into the write-back
+      path, after the pending return, so pending never needs a placeholder transition.
 - [ ] Implement in `sync_ticket` per spec §4 steps 1–6: fetch with `get_issue` (failure →
       `tracker_sync_failed`, retriable), then one transaction with `note_ticket_changed` when
       `updated_at > remote_revision` (or none) and `add_ticket_dependencies` (short refs qualified

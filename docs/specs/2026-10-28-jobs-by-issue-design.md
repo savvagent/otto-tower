@@ -61,8 +61,8 @@ What the code already does, checked against `master` at `a609b44`:
 - §2 A `ticket` filter on `list_jobs`.
 - §3 `jobTicketRef` on each lease `list_leases` returns.
 - §4 `sync_ticket` reads the GitHub issue body and adds a dependency for each "Blocked by"
-  reference that resolves to exactly one job. It now also accepts pending jobs (read only, no
-  write-back).
+  reference that resolves to exactly one job. It now also accepts a pending GitHub job (read only, no
+  write-back). A pending JIRA job is still refused.
 - §5 A drift marker (`ticketChangedAt`, `ticketStale`) on every `Job`, fed by non-bot GitHub
   issue comments arriving by webhook, and by `sync_ticket` noticing the issue changed since
   otto-tower last touched it. It is cleared by `update_job` changing the title or description.
@@ -274,7 +274,8 @@ Adding a field to the result object is additive: `out::DependenciesOut` already 
 
 The description gains: it also reads "Blocked by #N" lines from a GitHub issue's body and adds a
 dependency on #N's job when exactly one job has that issue. It reports each line's outcome in
-`blockers`, removes nothing, and works on a pending job (read only).
+`blockers`, removes nothing, and works on a pending GitHub job (read only). A pending JIRA
+job is still refused.
 
 ## §5 Drift marker
 
@@ -398,7 +399,8 @@ both down:
 - **Edits keep their current behaviour** (the description is rewritten for bound repos). The
   marker covers what that path misses: comments by webhook on labelled issues, and any change
   `sync_ticket` sees on a bound repo (labelled or not). Unbound repos stay uncovered (§5).
-- **`sync_ticket` on a pending job is now allowed** (read only). Before, it was an error with
+- **`sync_ticket` on a pending GitHub job is now allowed** (read only; a pending JIRA job is
+  still refused). Before, it was an error with
   nothing to retry, so no correct caller depends on it.
 - **The full form matches the stored spelling, not the repo's current GitHub name.** A renamed
   repo's old `ticketRef`s still match the short form.
