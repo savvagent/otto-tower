@@ -663,18 +663,22 @@ async fn rls_scopes_the_lease_job_join(pool: PgPool) {
         assert_eq!(j.id.as_str(), "job-1");
         tx.commit().await.unwrap();
     }
-    let mut tx = db.begin(a.org).await.unwrap();
-    tx.acquire_lease(
-        a.repo,
-        "branch:main",
-        a.user,
-        None,
-        Some(&JobId::from("job-1")),
-        None,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    // Both orgs lease their own `job-1`, so a join that matched on the id
+    // alone would have a second lease and a second job to pair with.
+    for t in [&a, &b] {
+        let mut tx = db.begin(t.org).await.unwrap();
+        tx.acquire_lease(
+            t.repo,
+            "branch:main",
+            t.user,
+            None,
+            Some(&JobId::from("job-1")),
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
 
     let mut tx = db.begin_unpinned().await.unwrap();
     sqlx::query("SET LOCAL ROLE otto_app")
@@ -706,6 +710,12 @@ async fn rls_scopes_the_lease_job_join(pool: PgPool) {
     tx.commit().await.unwrap();
     assert_eq!(leases.len(), 1);
     assert_eq!(leases[0].job_ticket_ref.as_deref(), Some("acme/api#1"));
+
+    let mut tx = db.begin(b.org).await.unwrap();
+    let leases = tx.list_leases(None).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].job_ticket_ref.as_deref(), Some("globex/api#2"));
 }
 
 #[sqlx::test]
