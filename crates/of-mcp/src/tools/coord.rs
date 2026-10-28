@@ -498,6 +498,10 @@ impl Factory {
         let repo_id = repo_id_of(channel_of(&mut tx, &team, arg, true).await?);
         // Resolved before the fingerprint is taken, so a replay that names the
         // job by its issue once and by its id the next still replays.
+        // A replay is re-resolved on every call: if a second job has since
+        // linked the same issue, a retry that named the job as "#N" is refused
+        // as ambiguous_ticket_ref rather than replayed. That is acceptable,
+        // because the reference no longer names one job.
         let job_id = job_arg(&mut tx, &team, args.job.as_deref()).await?;
         if let Some(parent) = args.in_reply_to {
             tx.reply_parent(parent, &team).await.mcp()?;

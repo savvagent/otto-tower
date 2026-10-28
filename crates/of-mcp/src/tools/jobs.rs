@@ -118,8 +118,8 @@ pub struct AddJobArgs {
     /// workflow's fields go here.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
-    /// Jobs that must be completed before this one can be claimed. Each is
-    /// a job id like "job-42", or the job's issue as "#928" or "owner/repo#928".
+    /// Jobs that must be completed before this one can be claimed. Each is a job
+    /// id like "job-42", or the job's issue as "#928" or "owner/repo#928".
     #[serde(default)]
     pub depends_on: Vec<String>,
     /// A caller-chosen key. Replaying add_job with the same key and the same
@@ -346,10 +346,12 @@ pub struct SetDependenciesArgs {
     /// The job whose dependencies are changing. A job id like "job-42", or the job's issue as
     /// "#928" or "owner/repo#928".
     pub job: String,
-    /// Jobs this job should wait for, each named the same way as `job`.
+    /// Jobs this job should wait for. Each is a job id like "job-42", or the
+    /// job's issue as "#928" or "owner/repo#928".
     #[serde(default)]
     pub add: Vec<String>,
-    /// Jobs it should stop waiting for, each named the same way as `job`.
+    /// Jobs it should stop waiting for. Each is a job id like "job-42", or the
+    /// job's issue as "#928" or "owner/repo#928".
     #[serde(default)]
     pub remove: Vec<String>,
 }
@@ -761,6 +763,10 @@ impl Factory {
         let repo = repo_for_write(&mut tx, &team, args.repo, args.remote, Hold::Shared).await?;
         // Resolved before the fingerprint is taken, so a replay that spells a
         // dependency as its issue once and as its id the next still replays.
+        // A replay is re-resolved on every call: if a second job has since
+        // linked the same issue, a retry that spelled the dependency as "#N" is
+        // refused as ambiguous_ticket_ref rather than replayed. That is
+        // acceptable, because the reference no longer names one job.
         let depends_on = job_refs(&mut tx, &team, &args.depends_on).await?;
         ensure_jobs_visible(&mut tx, &team, &depends_on).await?;
         let new_job = NewJob {
@@ -839,8 +845,9 @@ impl Factory {
                        them, agentType, or ticket. ticket is an issue (\"#928\" or \
                        \"owner/repo#928\") and returns every job linked to it, which is what to \
                        call when an issue reference was refused as ambiguous_ticket_ref. \
-                       agentType is a routing hint for a mixed fleet, not access control: passing it also returns jobs with no agentType set, since \
-                       unrouted work is anyone's to take. To find work you can actually take, \
+                       agentType is a routing hint for a mixed fleet, not access control: \
+                       passing it also returns jobs with no agentType set, since unrouted \
+                       work is anyone's to take. To find work you can actually take, \
                        prefer `ready` — this returns jobs regardless of whether their \
                        dependencies are satisfied."
     )]

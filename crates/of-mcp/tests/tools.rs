@@ -6181,3 +6181,156 @@ async fn send_message_resolves_an_issue_and_replays_across_spellings(pool: PgPoo
         .await);
     assert_eq!(first["message"]["id"], second["message"]["id"]);
 }
+
+impl Teams {
+    /// Queue a job linked to `ticket` in `repo`, as the owner (who sees every
+    /// team's repos).
+    async fn add_ticketed_in(&self, repo: &str, title: &str, ticket: &str) -> String {
+        ok(self
+            .env
+            .factory
+            .add_job(
+                Extension(parts(&self.owner)),
+                Parameters(tools::jobs::AddJobArgs {
+                    title: title.into(),
+                    description: None,
+                    repo: Some(repo.into()),
+                    remote: None,
+                    ticket_ref: Some(ticket.into()),
+                    agent_type: None,
+                    metadata: None,
+                    depends_on: vec![],
+                    idempotency_key: None,
+                }),
+            )
+            .await)["job"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+}
+
+/// An issue reference resolves through the caller's team scope: a job of a team
+/// they are not on is never resolved, never makes the reference ambiguous, and
+/// is never named in the refusal.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn an_issue_reference_never_resolves_to_or_names_a_hidden_job(pool: PgPool) {
+    let t = teams_world(pool).await;
+    let hidden = t
+        .add_ticketed_in("platform-repo", "platform only", "acme/web#13")
+        .await;
+
+    let got = ok(t.env.get_job_by(&t.alice, "acme/web#13").await);
+    assert_eq!(got["job"]["id"], hidden.as_str());
+    for who in [&t.bob, &t.carol] {
+        for raw in ["acme/web#13", "#13"] {
+            let e = err(t.env.get_job_by(who, raw).await);
+            assert_eq!(code_of(&e), "job_not_found", "{raw}");
+            assert!(!e.message.contains(&hidden), "{}", e.message);
+        }
+    }
+
+    // One issue, one job on a hidden team and one org-wide.
+    let hidden_twin = t
+        .add_ticketed_in("platform-repo", "platform twin", "acme/web#20")
+        .await;
+    let shared = t
+        .add_ticketed_in("shared", "shared twin", "acme/web#20")
+        .await;
+
+    let e = err(t.env.get_job_by(&t.owner, "#20").await);
+    assert_eq!(code_of(&e), "ambiguous_ticket_ref", "the owner sees both");
+
+    for who in [&t.bob, &t.carol] {
+        let got = ok(t.env.get_job_by(who, "#20").await);
+        assert_eq!(got["job"]["id"], shared.as_str());
+    }
+
+    // A refusal that does happen for the caller still leaves the hidden job out.
+    let mine = t
+        .add_ticketed_in("growth-repo", "growth twin", "acme/web#20")
+        .await;
+    let e = err(t.env.get_job_by(&t.bob, "#20").await);
+    assert_eq!(code_of(&e), "ambiguous_ticket_ref");
+    assert!(
+        e.message.contains(&shared) && e.message.contains(&mine),
+        "{}",
+        e.message
+    );
+    assert!(!e.message.contains(&hidden_twin), "{}", e.message);
+}
+
+/// `sync_ticket` takes an issue reference like every other job argument, and
+/// reaches the same refusal it would by id.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_accepts_an_issue_reference(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    let job = env.add_job(&caller, "linked but unbound").await;
+    let id = job["id"].as_str().unwrap().to_string();
+
+    ok(env
+        .factory
+        .link_ticket(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::LinkTicketArgs {
+                job: id.clone(),
+                tracker: Tracker::Github,
+                ticket_ref: "acme/api#13".into(),
+            }),
+        )
+        .await);
+    env.claim(&caller, &id, "agent-one").await;
+
+    let sync = |job: &str| {
+        env.factory.sync_ticket(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::JobArgs { job: job.into() }),
+        )
+    };
+    let by_id = err(sync(&id).await);
+    let by_issue = err(sync("#13").await);
+
+    assert_eq!(code_of(&by_issue), "invalid_argument");
+    assert!(
+        by_issue.message.contains("no active"),
+        "{}",
+        by_issue.message
+    );
+    assert_eq!(by_issue.message, by_id.message);
+    assert_eq!(code_of(&by_issue), code_of(&by_id));
+}
+
+/// A reference that resolves to nothing fails the call, and a failed call
+/// records nothing: the usage row rolls back with the rest of the transaction.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn an_unresolved_issue_reference_records_no_usage(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    env.register(&caller).await;
+    env.add_ticketed(&caller, "fix login", "acme/api#13").await;
+
+    let reads = outbox_rows(&env, "get_job").await.len();
+    let e = err(env.get_job_by(&caller, "#999").await);
+    assert_eq!(code_of(&e), "job_not_found");
+    assert_eq!(outbox_rows(&env, "get_job").await.len(), reads);
+
+    let before = outbox_rows(&env, "complete_job").await.len();
+    let e = err(env
+        .factory
+        .complete_job(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::CompleteJobArgs {
+                job: "#999".into(),
+                result: None,
+                expected_attempts: None,
+            }),
+        )
+        .await);
+    assert_eq!(code_of(&e), "job_not_found");
+    assert_eq!(outbox_rows(&env, "complete_job").await.len(), before);
+
+    // The same call that resolves does record its row, so the counts above
+    // are not vacuously equal.
+    ok(env.get_job_by(&caller, "#13").await);
+    assert_eq!(outbox_rows(&env, "get_job").await.len(), reads + 1);
+}
