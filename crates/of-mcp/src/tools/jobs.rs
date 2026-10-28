@@ -1748,8 +1748,12 @@ impl Factory {
                        fail) post updates to it, and so sync_ticket can force a write-back on \
                        demand. Use this for a job that was queued by hand (add_job) or claimed \
                        before anyone thought to link it — a job created from an inbound webhook \
-                       already has this set. Fails with ticket_already_linked if another live \
-                       job in this repo already owns that ticket_ref."
+                       already has this set. Linking to a different ticket than before clears \
+                       ticketStale and ticketChangedAt, because the previous ticket's changes \
+                       do not carry over; the ticket_ref is compared exactly, so call \
+                       sync_ticket afterwards if it is the same issue under another name. \
+                       Fails with ticket_already_linked if another live job in this repo \
+                       already owns that ticket_ref."
     )]
     pub async fn link_ticket(
         &self,

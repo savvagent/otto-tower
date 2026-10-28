@@ -980,6 +980,44 @@ async fn a_human_comment_marks_the_issues_job_stale(pool: PgPool) {
     assert_eq!(after.description, before.description);
 }
 
+/// A job relinked to another issue drops the old issue's mark, so a comment on
+/// the new issue marks it even when that comment is earlier than the old mark
+/// (which the comment guard would otherwise have dropped as already counted).
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_comment_on_a_relinked_jobs_new_issue_marks_it_whatever_the_old_mark(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    let job = open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+    let (t1, t2) = (hours_from_now(1), hours_from_now(2));
+
+    let old = github_comment(INSTALLATION, "acme/api", 17, &["trackers"], false, &t2);
+    assert_eq!(post_github_comment(&h, &old).await.status(), StatusCode::OK);
+    assert!(job_for(&h, org, "acme/api", 17).await.ticket_stale);
+
+    let mut tx = h.db.begin(org).await.unwrap();
+    let relinked = tx
+        .link_ticket(&job.id, Tracker::Github, "acme/api#18")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(!relinked.ticket_stale);
+    assert_eq!(relinked.ticket_changed_at, None);
+
+    let new = github_comment(INSTALLATION, "acme/api", 18, &["trackers"], false, &t1);
+    assert_eq!(post_github_comment(&h, &new).await.status(), StatusCode::OK);
+
+    let after = job_for(&h, org, "acme/api", 18).await;
+    assert_eq!(after.id, job.id);
+    assert!(after.ticket_stale);
+    assert_eq!(
+        after
+            .ticket_changed_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        Some(t1)
+    );
+}
+
 /// An `issues` `edited` event for issue `number`, with `body` as the issue's
 /// new body.
 fn github_issue_edit(
