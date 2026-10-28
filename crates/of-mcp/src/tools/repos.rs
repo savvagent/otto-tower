@@ -9,7 +9,7 @@ use rmcp::model::ErrorData;
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
 
-use super::{out, redact_foreign_ids, repo_for_write, repo_of, scope};
+use super::{out, repo_for_write, repo_of, scope};
 use crate::server::{Factory, McpResult};
 use of_core::repos::Hold;
 
@@ -133,7 +133,7 @@ impl Factory {
                 ..Default::default()
             })
             .await
-            .map_err(|e| redact_foreign_ids(&team, e))
+            .map_err(|e| team.redact_foreign_ids(e))
             .mcp()?;
         tx.commit().await.mcp()?;
 
@@ -224,7 +224,7 @@ impl Factory {
                 },
             )
             .await
-            .map_err(|e| redact_foreign_ids(&team, e))
+            .map_err(|e| team.redact_foreign_ids(e))
             .mcp()?;
         tx.commit().await.mcp()?;
 
