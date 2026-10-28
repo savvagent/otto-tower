@@ -168,7 +168,8 @@ green.
 - [ ] Implement `author_is_bot` and the `Changed` branch in `inbound_decision` (GitHub only; spec
       §5 signal 1).
 - [ ] Write a failing test in `webhooks_http.rs`: a signed human `issue_comment` webhook for a bound
-      repo's existing job flips `ticketStale` (read back through `of-core`), and a bot one does not.
+      repo's existing job flips `ticketStale` (read back through `of-core`). A bot one does not, and
+      neither does a human one on an issue missing the binding's trigger label (spec §5 limits).
       Reuse that file's existing signed-webhook helpers.
 - [ ] Apply `Changed` in `routes/webhooks.rs`: `note_ticket_changed` with the parsed
       `remote_revision` plus `set_remote_revision`, in the webhook's transaction.
@@ -222,7 +223,10 @@ green.
 - [ ] Implement in `sync_ticket` per spec §4 steps 1–6: fetch with `get_issue` (failure →
       `tracker_sync_failed`, retriable), then one transaction with `note_ticket_changed` when
       `updated_at > remote_revision` (or none) and `add_ticket_dependencies` (short refs qualified
-      with the job's `owner/repo`), then return for pending, else the existing write-back. Return
+      with the job's `owner/repo`), then return for pending, else the existing write-back. On every
+      success path, the pending one included, `charge` runs last in its own `charge_tx`, after the
+      other transactions commit (spec §4 step 6) and never inside the dependency transaction. Add a
+      test that a pending-path `sync_ticket` records exactly one `sync_ticket` usage row. Return
       `SyncTicketOut`. Update the tool description (spec §4 Output).
 - [ ] Run `cargo test --workspace` and clippy. Both pass.
 - [ ] Format and commit: `git commit -m "feat(of-mcp): turn Blocked by lines into dependencies in sync_ticket"`.
