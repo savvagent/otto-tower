@@ -1364,3 +1364,152 @@ async fn update_from_ticket_keeps_an_earlier_mark(pool: PgPool) {
     assert!(updated.ticket_stale);
     assert!(read(&db, &t, &j.id).await.ticket_stale);
 }
+
+// ------------------------------------------------- add_ticket_dependencies
+
+use of_core::jobs::{BlockerKind, BlockerOutcome};
+
+fn outcome(kind: BlockerKind, ticket: &str, jobs: &[&JobId]) -> BlockerOutcome {
+    BlockerOutcome {
+        ticket_ref: ticket.into(),
+        outcome: kind,
+        jobs: jobs.iter().map(|j| (*j).clone()).collect(),
+    }
+}
+
+/// Every outcome in one call, in order. A `cycle` checked before its insert
+/// leaves the transaction usable, so the `added` after it still lands.
+#[sqlx::test]
+async fn add_ticket_dependencies_reports_each_reference(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let me = ticketed(&db, &t, t.repo, "me", "acme/api#1").await;
+    let blocker = ticketed(&db, &t, t.repo, "blocker", "acme/api#2").await;
+    let twin_a = ticketed(&db, &t, t.repo, "first try", "acme/api#3").await;
+    let twin_b = ticketed(&db, &t, t.repo, "second try", "acme/api#3").await;
+    let mut tx = db.begin(t.org).await.unwrap();
+    let dependent = tx
+        .add_job(NewJob {
+            ticket_ref: Some("acme/api#4".into()),
+            depends_on: vec![me.clone()],
+            ..job(&t, "waits for me")
+        })
+        .await
+        .unwrap()
+        .id;
+    tx.commit().await.unwrap();
+    let later = ticketed(&db, &t, t.repo, "later", "acme/api#5").await;
+
+    let refs: Vec<TicketQuery> = [
+        "acme/api#2",
+        "acme/api#9",
+        "acme/api#3",
+        "acme/api#4",
+        "acme/api#1",
+        "acme/api#5",
+    ]
+    .into_iter()
+    .map(query)
+    .collect();
+    let mut tx = db.begin(t.org).await.unwrap();
+    let got = tx
+        .add_ticket_dependencies(&me, &refs, &TeamScope::All)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        got,
+        vec![
+            outcome(BlockerKind::Added, "acme/api#2", &[&blocker]),
+            outcome(BlockerKind::NoJob, "acme/api#9", &[]),
+            outcome(BlockerKind::Ambiguous, "acme/api#3", &[&twin_b, &twin_a]),
+            outcome(BlockerKind::Cycle, "acme/api#4", &[&dependent]),
+            outcome(BlockerKind::Cycle, "acme/api#1", &[&me]),
+            outcome(BlockerKind::Added, "acme/api#5", &[&later]),
+        ]
+    );
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    // `dependencies_of` orders by id, and both ids are single-digit.
+    assert_eq!(
+        tx.dependencies_of(&me).await.unwrap(),
+        vec![blocker.clone(), later.clone()],
+        "only the added ones were written"
+    );
+
+    // Again: what is already there says so and writes nothing new.
+    let again = tx
+        .add_ticket_dependencies(&me, &[query("acme/api#2")], &TeamScope::All)
+        .await
+        .unwrap();
+    assert_eq!(
+        again,
+        vec![outcome(BlockerKind::Already, "acme/api#2", &[&blocker])]
+    );
+    assert_eq!(tx.dependencies_of(&me).await.unwrap().len(), 2);
+    tx.commit().await.unwrap();
+}
+
+/// Org B's job carries the issue org A's line names: for A it does not exist.
+#[sqlx::test]
+async fn add_ticket_dependencies_never_crosses_orgs(pool: PgPool) {
+    let db = db(pool);
+    let a = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let b = tenant(&db, "globex", "git@github.com:globex/api.git").await;
+    ticketed(&db, &b, b.repo, "padding", "globex/api#1").await;
+    ticketed(&db, &b, b.repo, "theirs", "acme/api#5").await;
+    let me = ticketed(&db, &a, a.repo, "me", "acme/api#1").await;
+
+    let mut tx = db.begin(a.org).await.unwrap();
+    let got = tx
+        .add_ticket_dependencies(&me, &[query("acme/api#5")], &TeamScope::All)
+        .await
+        .unwrap();
+    assert_eq!(got, vec![outcome(BlockerKind::NoJob, "acme/api#5", &[])]);
+    assert!(tx.dependencies_of(&me).await.unwrap().is_empty());
+    tx.commit().await.unwrap();
+}
+
+/// A candidate the caller's teams cannot see is `no_job`, never written and
+/// never named. A job the caller cannot see is refused outright.
+#[sqlx::test]
+async fn add_ticket_dependencies_respects_the_team_scope(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let team = TeamId::from(uuid::Uuid::new_v4());
+    let hidden_repo = second_repo(&db, &t, "web", Some(team)).await;
+    let me = ticketed(&db, &t, t.repo, "me", "acme/api#1").await;
+    let hidden = ticketed(&db, &t, hidden_repo, "hidden", "acme/web#5").await;
+
+    let outsider = TeamScope::Teams(Default::default());
+    let insider = TeamScope::Teams([team].into_iter().collect());
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let got = tx
+        .add_ticket_dependencies(&me, &[query("acme/web#5")], &outsider)
+        .await
+        .unwrap();
+    assert_eq!(got, vec![outcome(BlockerKind::NoJob, "acme/web#5", &[])]);
+    assert!(tx.dependencies_of(&me).await.unwrap().is_empty());
+
+    let err = tx
+        .add_ticket_dependencies(&hidden, &[query("acme/api#1")], &outsider)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "job_not_found");
+    tx.commit().await.unwrap();
+
+    // The same line, for a caller on the team, lands: the refusals above are
+    // the scope's doing.
+    let mut tx = db.begin(t.org).await.unwrap();
+    let got = tx
+        .add_ticket_dependencies(&me, &[query("acme/web#5")], &insider)
+        .await
+        .unwrap();
+    assert_eq!(
+        got,
+        vec![outcome(BlockerKind::Added, "acme/web#5", &[&hidden])]
+    );
+    tx.commit().await.unwrap();
+}

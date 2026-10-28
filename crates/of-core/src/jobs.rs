@@ -211,6 +211,37 @@ pub struct Job {
     pub ticket_stale: bool,
 }
 
+/// What [`JobsExt::add_ticket_dependencies`] did with one issue reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockerKind {
+    /// The one job carrying the issue is now a dependency.
+    Added,
+    /// It already was one. Nothing changed.
+    Already,
+    /// No job you can see carries the issue. Nothing changed.
+    NoJob,
+    /// Several jobs you can see carry the issue (`jobs` lists them, newest
+    /// first). Nothing changed: add the right one with set_dependencies.
+    Ambiguous,
+    /// The job carrying the issue is this job itself or already waits on it,
+    /// so depending on it would deadlock both. Nothing changed.
+    Cycle,
+}
+
+/// One "Blocked by" reference and what came of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockerOutcome {
+    /// The issue reference as it was looked up, qualified and lowercased:
+    /// "owner/repo#N".
+    pub ticket_ref: String,
+    pub outcome: BlockerKind,
+    /// The job concerned for added, already and cycle; the candidates for
+    /// ambiguous (at most ten); empty for no_job.
+    pub jobs: Vec<JobId>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NewJob {
     pub repo_id: RepoId,
@@ -449,6 +480,31 @@ pub trait JobsExt {
         raw: &[String],
         scope: &TeamScope,
     ) -> impl std::future::Future<Output = Result<Vec<JobId>>> + Send;
+
+    /// Make `id` depend on the job carrying each of `tickets`, where exactly
+    /// one job `scope` can see carries it, and say per ticket what happened
+    /// ([`BlockerKind`]). Only adds: a dependency is never removed here.
+    ///
+    /// Resolution is [`Self::resolve_job_ref`]'s, so a hidden job neither
+    /// resolves nor makes a ticket ambiguous. The job itself counts as a
+    /// candidate, so naming its own issue is reported as a `cycle` rather than
+    /// passed over. `id` failing [`Self::get_job_visible_held`] is that error,
+    /// for the whole call. A unique candidate failing it is `no_job`: it was
+    /// visible to the match a moment ago, and a reference to it is not written
+    /// on the strength of that.
+    ///
+    /// Unlike [`Self::set_dependencies`], the cycle check runs *before* each
+    /// insert, so a bad line is one outcome among several rather than an error
+    /// rolling back the lines around it. The race that ordering admits (a
+    /// concurrent edit closing the loop from the other side) is the same one a
+    /// caller of `set_dependencies` would hit in two calls, and the loop it
+    /// could leave is visible in `blocked` and removable.
+    fn add_ticket_dependencies(
+        &mut self,
+        id: &JobId,
+        tickets: &[TicketQuery],
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<Vec<BlockerOutcome>>> + Send;
 
     /// Claim one or more pending jobs atomically.
     ///
@@ -1230,35 +1286,15 @@ impl JobsExt for Tx<'_> {
             JobRef::Id(id) => return Ok(id),
             JobRef::Ticket(t) => t,
         };
-        let org = self.org();
-        let teams = scope
-            .restriction()
-            .map(|v| v.iter().map(|t| t.as_uuid()).collect::<Vec<uuid::Uuid>>());
-        // Eleven rows: up to ten to name, and one more only to say "and more".
-        // Newest first, with `job-N`'s number breaking a tie between jobs made
-        // in one transaction (which share `created_at`).
-        let mut found: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT j.id FROM jobs j \
-             WHERE j.org_id = $1 AND {} AND {} \
-             ORDER BY j.created_at DESC, length(j.id) DESC, j.id DESC \
-             LIMIT 11",
-            ticket_match_sql(2, 3),
-            job_visible_sql(4)
-        ))
-        .bind(org)
-        .bind(ticket.exact())
-        .bind(ticket.suffix_like())
-        .bind(teams)
-        .fetch_all(self.conn())
-        .await?;
+        let mut found = self.visible_jobs_for_ticket(&ticket, scope).await?;
         match found.len() {
             0 => Err(Error::NoJobForTicket(ticket.exact())),
-            1 => Ok(JobId(found.remove(0))),
+            1 => Ok(found.remove(0)),
             n => {
                 found.truncate(10);
                 Err(Error::AmbiguousTicket {
                     ticket: ticket.exact(),
-                    jobs: found.into_iter().map(JobId).collect(),
+                    jobs: found,
                     more: n > 10,
                 })
             }
@@ -1271,6 +1307,44 @@ impl JobsExt for Tx<'_> {
             ids.push(self.resolve_job_ref(r, scope).await?);
         }
         Ok(ids)
+    }
+
+    async fn add_ticket_dependencies(
+        &mut self,
+        id: &JobId,
+        tickets: &[TicketQuery],
+        scope: &TeamScope,
+    ) -> Result<Vec<BlockerOutcome>> {
+        // A write: the job's repo is held so its team cannot be reassigned
+        // between this check and the inserts below. Whatever the caller read
+        // earlier was in a transaction that has already committed.
+        self.get_job_visible_held(id, scope).await?;
+        let org = self.org();
+        let mut outcomes = Vec::with_capacity(tickets.len());
+        for ticket in tickets {
+            let mut found = self.visible_jobs_for_ticket(ticket, scope).await?;
+            let (outcome, jobs) = match found.len() {
+                0 => (BlockerKind::NoJob, Vec::new()),
+                1 => {
+                    let dep = found.remove(0);
+                    let kind = self.add_one_ticket_dependency(org, id, &dep, scope).await?;
+                    match kind {
+                        BlockerKind::NoJob => (kind, Vec::new()),
+                        _ => (kind, vec![dep]),
+                    }
+                }
+                _ => {
+                    found.truncate(10);
+                    (BlockerKind::Ambiguous, found)
+                }
+            };
+            outcomes.push(BlockerOutcome {
+                ticket_ref: ticket.exact(),
+                outcome,
+                jobs,
+            });
+        }
+        Ok(outcomes)
     }
 
     async fn claim_jobs(
@@ -2095,6 +2169,27 @@ pub(crate) trait JobsInternal {
     /// Allocate the next `job-N` sequence number from `org_counters`.
     async fn next_job_seq(&mut self) -> Result<i64>;
 
+    /// The ids of jobs `scope` can see whose `ticket_ref` matches `ticket`,
+    /// newest first, at most eleven: up to ten to name, and one more only to
+    /// say "and more". The one statement behind [`JobsExt::resolve_job_ref`]
+    /// and [`JobsExt::add_ticket_dependencies`], so the two cannot disagree on
+    /// what a reference means.
+    async fn visible_jobs_for_ticket(
+        &mut self,
+        ticket: &TicketQuery,
+        scope: &TeamScope,
+    ) -> Result<Vec<JobId>>;
+
+    /// One step of [`JobsExt::add_ticket_dependencies`]: `id` depending on its
+    /// one candidate `dep`. Writes only for [`BlockerKind::Added`].
+    async fn add_one_ticket_dependency(
+        &mut self,
+        org: OrgId,
+        id: &JobId,
+        dep: &JobId,
+        scope: &TeamScope,
+    ) -> Result<BlockerKind>;
+
     /// Look up the *live* job holding a ticket ref, scoped to one repo and
     /// tracker. Unlike `get_job_by_ticket_for_repo`'s newest-wins semantics —
     /// deliberately tolerant of multiple *historical* jobs sharing a
@@ -2273,6 +2368,90 @@ impl JobsInternal for Tx<'_> {
     /// be a column on the platform-side `orgs` row). The first call for an org
     /// creates its row; every call takes the row lock, so two concurrent inserts
     /// can never be handed the same number.
+    async fn visible_jobs_for_ticket(
+        &mut self,
+        ticket: &TicketQuery,
+        scope: &TeamScope,
+    ) -> Result<Vec<JobId>> {
+        let teams = scope
+            .restriction()
+            .map(|v| v.iter().map(|t| t.as_uuid()).collect::<Vec<uuid::Uuid>>());
+        // Newest first, with `job-N`'s number breaking a tie between jobs made
+        // in one transaction (which share `created_at`).
+        let found: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT j.id FROM jobs j \
+             WHERE j.org_id = $1 AND {} AND {} \
+             ORDER BY j.created_at DESC, length(j.id) DESC, j.id DESC \
+             LIMIT 11",
+            ticket_match_sql(2, 3),
+            job_visible_sql(4)
+        ))
+        .bind(self.org())
+        .bind(ticket.exact())
+        .bind(ticket.suffix_like())
+        .bind(teams)
+        .fetch_all(self.conn())
+        .await?;
+        Ok(found.into_iter().map(JobId).collect())
+    }
+
+    async fn add_one_ticket_dependency(
+        &mut self,
+        org: OrgId,
+        id: &JobId,
+        dep: &JobId,
+        scope: &TeamScope,
+    ) -> Result<BlockerKind> {
+        if dep == id {
+            return Ok(BlockerKind::Cycle);
+        }
+        match self.get_job_visible_held(dep, scope).await {
+            Ok(_) => {}
+            Err(Error::JobNotFound(_)) => return Ok(BlockerKind::NoJob),
+            Err(e) => return Err(e),
+        }
+        let already: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM job_dependencies \
+                            WHERE org_id = $1 AND job_id = $2 AND depends_on = $3)",
+        )
+        .bind(org)
+        .bind(id)
+        .bind(dep)
+        .fetch_one(self.conn())
+        .await?;
+        if already {
+            return Ok(BlockerKind::Already);
+        }
+        // Would `id` -> `dep` close a loop? Only if `id` is already reachable
+        // from `dep`: `set_dependencies`' reach, started from the candidate.
+        let closes: bool = sqlx::query_scalar(
+            "WITH RECURSIVE reach(job_id) AS ( \
+                 SELECT depends_on FROM job_dependencies WHERE org_id = $1 AND job_id = $2 \
+                 UNION \
+                 SELECT d.depends_on FROM job_dependencies d \
+                   JOIN reach r ON r.job_id = d.job_id WHERE d.org_id = $1 \
+             ) SELECT EXISTS (SELECT 1 FROM reach WHERE job_id = $3)",
+        )
+        .bind(org)
+        .bind(dep)
+        .bind(id)
+        .fetch_one(self.conn())
+        .await?;
+        if closes {
+            return Ok(BlockerKind::Cycle);
+        }
+        sqlx::query(
+            "INSERT INTO job_dependencies (org_id, job_id, depends_on) VALUES ($1,$2,$3) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(org)
+        .bind(id)
+        .bind(dep)
+        .execute(self.conn())
+        .await?;
+        Ok(BlockerKind::Added)
+    }
+
     async fn next_job_seq(&mut self) -> Result<i64> {
         let seq: i64 = sqlx::query_scalar(
             "INSERT INTO org_counters (org_id, next_job_seq) VALUES ($1, 2) \

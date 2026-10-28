@@ -173,6 +173,8 @@ pub fn router(db: Db, watcher: Arc<Watcher>, config: Config) -> Router {
     let tracker_sync = crate::server::TrackerSyncConfig {
         github_app_id: config.github_app_id,
         github_app_private_key: config.github_app_private_key.clone(),
+        // Deliberately not configurable: only tests point the client elsewhere.
+        github_api_base: None,
         jira_client_id: config.jira_client_id.clone(),
         jira_client_secret: config.jira_client_secret.clone(),
         encryption_key: config.encryption_key.clone(),

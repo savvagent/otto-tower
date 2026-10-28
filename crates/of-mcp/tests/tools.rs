@@ -2979,10 +2979,11 @@ async fn sync_ticket_requires_a_tracker_link(pool: PgPool) {
     assert!(e.message.contains("link_ticket"), "{}", e.message);
 }
 
-/// A job that is still `pending` has nothing to report yet — there is no
-/// status change to reflect on the ticket.
+/// A pending GitHub job is read now (its "Blocked by" lines), not refused, but
+/// reading needs an installation to read with: with no binding the call gets
+/// the same configuration error as any other job.
 #[sqlx::test(migrations = "../of-core/migrations")]
-async fn sync_ticket_refuses_a_still_pending_job(pool: PgPool) {
+async fn sync_ticket_on_a_pending_job_without_a_binding_reports_not_configured(pool: PgPool) {
     let (env, caller) = env(pool).await;
     env.register(&caller).await;
     let job = env.add_job(&caller, "still pending").await;
@@ -3008,7 +3009,8 @@ async fn sync_ticket_refuses_a_still_pending_job(pool: PgPool) {
         )
         .await);
 
-    assert!(e.message.contains("pending"), "{}", e.message);
+    assert_eq!(code_of(&e), "invalid_argument");
+    assert!(e.message.contains("no active"), "{}", e.message);
 }
 
 /// A linked job whose repo has no tracker binding at all gets a
@@ -6333,4 +6335,368 @@ async fn an_unresolved_issue_reference_records_no_usage(pool: PgPool) {
     // are not vacuously equal.
     ok(env.get_job_by(&caller, "#13").await);
     assert_eq!(outbox_rows(&env, "get_job").await.len(), reads + 1);
+}
+
+// ------------------------------------- sync_ticket reads the issue (GitHub)
+
+/// An RSA key for signing the App JWT, copied from `of-trackers`' own tests
+/// (where it is private to a `#[cfg(test)]` module). The mock below never
+/// checks the signature; the client only needs a key it can sign with.
+const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC3XlFCGcip1ief\nEPPBKThHItEglgMYCn//hcJ1kNWnClwkYmvy3pQ49Vyi+h0GZ7FQwB7K/19e28lY\n9rF/Wp0t9WA1gLh1A6MU6wUJ0fHllWfFy9+9K1CgnLZvO+x77JRODhfb7nxYUjjl\nTBYokVvw+5njbWZnxcrSR88+PprGJt7a3sxeLQ7N/TaYlyqqputMO4BtCp7dpDxg\nesElXSkCEG4DWj2IiH2LGfDxeKaxE1JetkUafCV7uMmfQ5v74sNFY5BfZNNJBfnA\nKBzK7oOF19THBxmtVWo/tYE5aBuADAUWZKOduvbA08lr3LsldJqdo5d8HJudrlte\ndl51wCcfAgMBAAECggEAUwcDXx1CpVghH56y6FsMLvWeYJVcOEYE2APOXaJjg1un\nBhiEjXdoAPRkai06+Dv6ZzhemQcRvWdiX4RwMVyrv/QTiJZMrzsi3CVgZiZoU86X\nKtIZ8FNNEjRzTKGC/kfMjR1Hg1+UcP9l4LlXbS4IRfD+qKJQFJvULuux9JqvRRnu\nq7QkKfqX8CbMAYpxSa74pBTip1V73smUqM1rP7gt0GAOd0LG19cQqPDMeWn2h14F\nDOd/48z/1gTPCCywL3AJ9Fz4rfEJi74cSqVEinJR2yduUJzXgZ/PRhKOvKicIstL\nayRSwwC2FKuM4WtOECpl8QwPn/ZV7ATxQOhcO/W55QKBgQDsRen/Ckrju3dC9zlf\nZ4+cCBFMQMjR6/gTox+4obxsZ0WynLbc5MqHP565VfUmOsl2X3aiLz/0kiiRdvQf\nLcorsA6ujYXEyRSNTAeHfzWgtaDw9dKEtLSSNjB6XJuSsYhWHvpzC2mManeWi3/0\nKFbZU+EQgDcWlLnY8W9ns6fDlQKBgQDGrZ9OU0BhIYTm8zyHrpAsrRXeOr2PkdYX\nP+ObF96UIYP8/AZBFM60/A2wvIeNei3IoVgNanLpGOcE0rHkUY5Bfd3wGAT1jXXK\nbc66rcOkI41tTebvJQClmupHSnhfLaGaqdxio7Syn5sj8qDbXsB9AaN/wAWLOd76\nhdMIZ/hS4wKBgQCsK1YT7uAbiqOhPJ2mE8TmIkrYkezEa3redGPNGq4/IBH90Yy+\n8klSvN1gmG6HaRcdFvtPu7aS9V5ygYfqoGdN5oEMWTw85XoAbIKgDeZ6MWARtk+t\nPDDIyowQ3iLPhmaeuvwtkQdctshl/0lCFZMT0reSWpvJ7J5wo55Wpud88QKBgHCv\neyKen24357xiC1vdi5J7XWLdKDTs/2PSbdLCmBCmbckoXJe/KHqIV299jtiUirE3\nqcx6KtDAug8HPbSE+U12CVIrHWz0nfGBlHZXJhbLv2RWgfvznclP8z8aIunA5N7n\nJsOfnFaPphueetPRixWbv1Mu4zYTTcAD9SzYY4UHAoGAcW+OQP6DFWhq7Yzi6Qn3\n7B1yXbvnlYP/Tj9/bXP25DxZcT8QSNfasbfq4afePduTEjXcGWvM7wTllyMif2/X\nx3+QNzDNxUxmRAIOZqSO+XBfq8Yf7unrUX92BItKKMc/8d+/7R5vmj9GdRmS746W\nWWOZZLPetCHggLA6DEPj4QM=\n-----END PRIVATE KEY-----\n";
+
+const INSTALLATION: &str = "777";
+
+/// A GitHub that answers what `sync_ticket` asks of it, for `acme/api` only:
+/// installation tokens, issues (body and `updated_at`, as set by a test), and
+/// comments, which it records.
+#[derive(Clone, Default)]
+struct MockGithub {
+    issues: Arc<std::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>>,
+    comments: Arc<std::sync::Mutex<Vec<(u64, String)>>>,
+}
+
+impl MockGithub {
+    async fn start() -> (Self, String) {
+        use axum::extract::{Path, State};
+        use axum::routing::{get, post};
+
+        async fn token(
+            Path(_id): Path<String>,
+        ) -> (http::StatusCode, axum::Json<serde_json::Value>) {
+            (
+                http::StatusCode::CREATED,
+                axum::Json(serde_json::json!({
+                    "token": "installation-token",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                })),
+            )
+        }
+        async fn issue(
+            State(gh): State<MockGithub>,
+            Path((owner, repo, n)): Path<(String, String, u64)>,
+        ) -> (http::StatusCode, axum::Json<serde_json::Value>) {
+            let found = (owner == "acme" && repo == "api")
+                .then(|| gh.issues.lock().unwrap().get(&n).cloned())
+                .flatten();
+            match found {
+                Some(v) => (http::StatusCode::OK, axum::Json(v)),
+                None => (
+                    http::StatusCode::NOT_FOUND,
+                    axum::Json(serde_json::json!({ "message": "Not Found" })),
+                ),
+            }
+        }
+        async fn comment(
+            State(gh): State<MockGithub>,
+            Path((_owner, _repo, n)): Path<(String, String, u64)>,
+            axum::Json(body): axum::Json<serde_json::Value>,
+        ) -> (http::StatusCode, axum::Json<serde_json::Value>) {
+            gh.comments
+                .lock()
+                .unwrap()
+                .push((n, body["body"].as_str().unwrap_or_default().to_string()));
+            (
+                http::StatusCode::CREATED,
+                axum::Json(serde_json::json!({ "id": 1 })),
+            )
+        }
+
+        let gh = MockGithub::default();
+        let app = axum::Router::new()
+            .route("/app/installations/{id}/access_tokens", post(token))
+            .route("/repos/{owner}/{repo}/issues/{n}", get(issue))
+            .route("/repos/{owner}/{repo}/issues/{n}/comments", post(comment))
+            .with_state(gh.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (gh, format!("http://{addr}"))
+    }
+
+    fn set_issue(&self, n: u64, body: &str, updated_at: &str) {
+        self.issues.lock().unwrap().insert(
+            n,
+            serde_json::json!({ "number": n, "body": body, "updated_at": updated_at }),
+        );
+    }
+
+    fn comments(&self) -> Vec<(u64, String)> {
+        self.comments.lock().unwrap().clone()
+    }
+}
+
+/// The fixture env, with a GitHub App configured against the mock and the
+/// fixture repo bound to an installation of it.
+async fn github_env(pool: PgPool) -> (Env, Principal, MockGithub) {
+    let (mut env, caller) = env(pool).await;
+    let (gh, base) = MockGithub::start().await;
+    env.factory = Factory::new_with_tracker_sync(
+        env.db.clone(),
+        env.factory.watcher().clone(),
+        env.client.clone(),
+        Meter::new(env.client.clone(), PLATFORM),
+        of_mcp::server::TrackerSyncConfig {
+            github_app_id: Some(42),
+            github_app_private_key: Some(TEST_KEY.into()),
+            github_api_base: Some(base),
+            ..Default::default()
+        },
+    );
+    let repo = env.register(&caller).await;
+    let repo_id: RepoId = repo["id"].as_str().unwrap().parse().unwrap();
+    let mut tx = env.db.begin(caller.org_id).await.unwrap();
+    let connection = upsert_connection(&mut tx, Provider::Github, INSTALLATION, None, None)
+        .await
+        .unwrap();
+    upsert_binding(
+        &mut tx,
+        repo_id,
+        Some(connection.id),
+        Provider::Github,
+        "acme/api",
+        "trackers",
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    (env, caller, gh)
+}
+
+impl Env {
+    /// A job linked, as a GitHub job, to `ticket`.
+    async fn linked(&self, caller: &Principal, title: &str, ticket: &str) -> String {
+        let id = self.add_job(caller, title).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        ok(self
+            .factory
+            .link_ticket(
+                Extension(parts(caller)),
+                Parameters(tools::jobs::LinkTicketArgs {
+                    job: id.clone(),
+                    tracker: Tracker::Github,
+                    ticket_ref: ticket.into(),
+                }),
+            )
+            .await);
+        id
+    }
+
+    async fn sync(&self, caller: &Principal, job: &str) -> Result<serde_json::Value, ErrorData> {
+        self.factory
+            .sync_ticket(
+                Extension(parts(caller)),
+                Parameters(tools::jobs::JobArgs { job: job.into() }),
+            )
+            .await
+            .map(|j| serde_json::to_value(j.0).unwrap())
+    }
+
+    async fn blocked_ids(&self, caller: &Principal) -> Vec<String> {
+        ok(self
+            .factory
+            .blocked(
+                Extension(parts(caller)),
+                Parameters(tools::jobs::RepoScopeArgs {
+                    repo: None,
+                    remote: None,
+                }),
+            )
+            .await)["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+}
+
+/// Long enough ago that no job in these tests was created before it.
+const LONG_AGO: &str = "2020-01-01T00:00:00Z";
+
+/// The motivating case: a pending job's issue says "Blocked by #14", and the
+/// job linked to #14 becomes its dependency. Pending means nothing is posted.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_turns_a_blocked_by_line_into_a_dependency(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    let blocker = env
+        .add_ticketed(&caller, "the blocker", "acme/api#14")
+        .await;
+    gh.set_issue(13, "Some context.\n\n**Blocked by:** #14", LONG_AGO);
+
+    let out = env.sync(&caller, &me).await.unwrap();
+
+    assert_eq!(out["job"]["id"], me.as_str());
+    assert_eq!(out["job"]["status"], "pending");
+    assert_eq!(
+        out["blockers"],
+        serde_json::json!([
+            { "ticketRef": "acme/api#14", "outcome": "added", "jobs": [blocker] }
+        ])
+    );
+    assert_eq!(env.blocked_ids(&caller).await, vec![me.clone()]);
+    assert!(gh.comments().is_empty(), "a pending job posts nothing");
+
+    // Removing the dependency through set_dependencies shows it was a real one.
+    let deps = ok(env
+        .factory
+        .set_dependencies(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::SetDependenciesArgs {
+                job: me.clone(),
+                add: vec![],
+                remove: vec![blocker.clone()],
+            }),
+        )
+        .await);
+    assert_eq!(deps["dependencies"], serde_json::json!([]));
+
+    // Calling again re-adds it; a retry with it still there says "already".
+    env.sync(&caller, &me).await.unwrap();
+    let again = env.sync(&caller, &me).await.unwrap();
+    assert_eq!(again["blockers"][0]["outcome"], "already");
+}
+
+/// A line naming an issue no job carries reports `no_job` and changes nothing.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_reports_a_blocker_with_no_job(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    gh.set_issue(13, "Blocked by #99", LONG_AGO);
+
+    let out = env.sync(&caller, &me).await.unwrap();
+
+    assert_eq!(
+        out["blockers"],
+        serde_json::json!([{ "ticketRef": "acme/api#99", "outcome": "no_job", "jobs": [] }])
+    );
+    assert!(env.blocked_ids(&caller).await.is_empty());
+}
+
+/// The pull is a drift signal too: an issue changed after the job was made,
+/// with no revision otto-tower wrote, marks the job stale, in the result and
+/// in what `ready` shows the next agent.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_marks_a_job_whose_issue_changed_since_stale(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    let later = (chrono::Utc::now() + chrono::Duration::minutes(5))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    gh.set_issue(13, "No blockers here.", &later);
+
+    let out = env.sync(&caller, &me).await.unwrap();
+    assert_eq!(out["job"]["ticketStale"], true, "{out}");
+    assert_eq!(out["blockers"], serde_json::json!([]));
+
+    let ready = ok(env
+        .factory
+        .ready(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::ReadyArgs::default()),
+        )
+        .await);
+    let row = ready["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["id"] == me.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(row["ticketStale"], true);
+}
+
+/// A job that is under way still gets its write-back comment, as before, and
+/// the blockers read from its issue alongside.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_on_a_claimed_job_still_posts_and_reports_blockers(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    gh.set_issue(13, "Blocked by #99", LONG_AGO);
+    // The claim posts its own comment, automatically.
+    env.claim(&caller, &me, "agent-one").await;
+    let before = gh.comments().len();
+
+    let out = env.sync(&caller, &me).await.unwrap();
+
+    assert_eq!(out["job"]["status"], "in-progress");
+    assert_eq!(out["blockers"][0]["outcome"], "no_job");
+    assert_eq!(
+        gh.comments()[before..],
+        [(13, "Claimed by agent-one.".to_string())]
+    );
+}
+
+/// A failed read is the tracker's failure, and worth retrying.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_reports_a_failed_issue_read_as_retriable(pool: PgPool) {
+    let (env, caller, _gh) = github_env(pool).await;
+    // The mock knows no issue #13, so the read is a 404.
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+
+    let e = env.sync(&caller, &me).await.unwrap_err();
+    assert_eq!(code_of(&e), "tracker_sync_failed");
+    assert_eq!(e.data.as_ref().unwrap()["retriable"], true);
+    assert!(outbox_rows(&env, "sync_ticket").await.is_empty());
+}
+
+/// The pending path records the call exactly once, like every other success.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_pending_sync_ticket_records_one_usage_row(pool: PgPool) {
+    let (env, caller, gh) = github_env(pool).await;
+    let me = env.linked(&caller, "the work", "acme/api#13").await;
+    env.add_ticketed(&caller, "the blocker", "acme/api#14")
+        .await;
+    gh.set_issue(13, "Blocked by #14", LONG_AGO);
+
+    env.sync(&caller, &me).await.unwrap();
+
+    assert_eq!(outbox_rows(&env, "sync_ticket").await.len(), 1);
+}
+
+/// JIRA has no read path here, so a pending JIRA job, bound or not, still has
+/// nothing to do and is refused as before.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn sync_ticket_still_refuses_a_pending_jira_job(pool: PgPool) {
+    let (env, caller) = env(pool).await;
+    let repo = env.register(&caller).await;
+    let repo_id: RepoId = repo["id"].as_str().unwrap().parse().unwrap();
+    let mut tx = env.db.begin(caller.org_id).await.unwrap();
+    let connection = upsert_connection(&mut tx, Provider::Jira, "acme.atlassian.net", None, None)
+        .await
+        .unwrap();
+    upsert_binding(
+        &mut tx,
+        repo_id,
+        Some(connection.id),
+        Provider::Jira,
+        "ACME",
+        "trackers",
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let id = env.add_job(&caller, "jira work").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(env
+        .factory
+        .link_ticket(
+            Extension(parts(&caller)),
+            Parameters(tools::jobs::LinkTicketArgs {
+                job: id.clone(),
+                tracker: Tracker::Jira,
+                ticket_ref: "ACME-7".into(),
+            }),
+        )
+        .await);
+
+    let e = env.sync(&caller, &id).await.unwrap_err();
+    assert_eq!(code_of(&e), "invalid_argument");
+    assert!(e.message.contains("pending"), "{}", e.message);
 }

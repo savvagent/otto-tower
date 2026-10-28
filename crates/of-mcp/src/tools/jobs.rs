@@ -19,7 +19,8 @@ use of_core::trackers::{
 use of_trackers::github::GithubAppClient;
 use of_trackers::jira::JiraClient;
 use of_trackers::sync::{
-    normalize_remote_revision, outbound_decision, select_jira_transition, JobTransition,
+    blocked_by, normalize_remote_revision, outbound_decision, parse_remote_revision,
+    select_jira_transition, JobTransition,
 };
 use otto_tenant::audit::Entry;
 use rmcp::handler::server::tool::Extension;
@@ -547,13 +548,19 @@ impl Factory {
         Ok(())
     }
 
-    async fn sync_github_job(
-        &self,
-        job: &Job,
-        ticket_ref: &str,
-        external_id: &str,
-        plan: &of_trackers::sync::OutboundDecision,
-    ) -> Result<Option<String>, String> {
+    /// A GitHub App client, pointed at `TrackerSyncConfig::github_api_base`
+    /// when one is set (a test's mock GitHub).
+    fn github_client(&self, app_id: i64, private_key: String) -> Result<GithubAppClient, String> {
+        let client =
+            GithubAppClient::new(app_id, private_key).map_err(|error| error.to_string())?;
+        Ok(match self.tracker_sync().github_api_base.clone() {
+            Some(base) => client.with_api_base(base),
+            None => client,
+        })
+    }
+
+    /// The App's credentials, or why there are none.
+    fn github_app(&self) -> Result<(i64, String), String> {
         let app_id = self
             .tracker_sync()
             .github_app_id
@@ -565,6 +572,39 @@ impl Factory {
             .ok_or_else(|| {
                 "GitHub tracker sync is not configured (missing App private key)".to_string()
             })?;
+        Ok((app_id, private_key))
+    }
+
+    /// `sync_ticket`'s read of a GitHub job's issue: its body and revision.
+    async fn read_github_issue(
+        &self,
+        job: &Job,
+        external_id: &str,
+        owner: &str,
+        repo: &str,
+        issue_number: i64,
+    ) -> Result<of_trackers::github::IssueView, String> {
+        let (app_id, private_key) = self.github_app()?;
+        let installation_id = external_id.parse::<i64>().map_err(|error| {
+            format!(
+                "tracker connection for job {} has a non-numeric GitHub installation id {external_id:?}: {error}",
+                job.id
+            )
+        })?;
+        self.github_client(app_id, private_key)?
+            .get_issue(installation_id, owner, repo, issue_number)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn sync_github_job(
+        &self,
+        job: &Job,
+        ticket_ref: &str,
+        external_id: &str,
+        plan: &of_trackers::sync::OutboundDecision,
+    ) -> Result<Option<String>, String> {
+        let (app_id, private_key) = self.github_app()?;
         let installation_id = external_id.parse::<i64>().map_err(|error| {
             format!(
                 "tracker connection for job {} has a non-numeric GitHub installation id {external_id:?}: {error}",
@@ -577,8 +617,7 @@ impl Factory {
                 job.id
             )
         })?;
-        let client =
-            GithubAppClient::new(app_id, private_key).map_err(|error| error.to_string())?;
+        let client = self.github_client(app_id, private_key)?;
 
         client
             .post_comment(installation_id, owner, repo, issue_number, &plan.comment)
@@ -1502,15 +1541,26 @@ impl Factory {
                        on; a request that only flags a claimed job does not sync until \
                        cancel_job later finalizes it), this call surfaces a tracker failure as \
                        its own error rather than swallowing it, because talking to the tracker is \
-                       the entire point of calling it. Requires the job to already be linked \
-                       via link_ticket and to be in-progress, active, completed, failed, or \
-                       cancelled."
+                       the entire point of calling it. \
+                       For a GitHub job it also reads the issue first: each \"Blocked by #N\" \
+                       (or \"Blocked by owner/repo#N\") line in the issue's body adds a \
+                       dependency on the job linked to that issue, when exactly one job you can \
+                       see has it. Each reference's outcome is in blockers: added, already (it \
+                       was a dependency), no_job (no job has that issue; nothing changed), \
+                       ambiguous (several do, listed in jobs; add the right one with \
+                       set_dependencies), or cycle (that job is this one or already waits on \
+                       it; nothing changed). Nothing is ever removed. The read also sets the \
+                       job's ticketStale when the issue changed after its description was \
+                       written. A pending GitHub job is read only: nothing is posted to it. \
+                       Requires the job to already be linked via link_ticket and its repo to \
+                       have an active tracker binding; a pending JIRA job is refused, because \
+                       there is nothing to read or post for it yet."
     )]
     pub async fn sync_ticket(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(args): Parameters<JobArgs>,
-    ) -> Result<Json<out::JobOut>, ErrorData> {
+    ) -> Result<Json<out::SyncTicketOut>, ErrorData> {
         let caller = self.caller(&parts)?;
         caller.require_scope(scope::TRACKERS).mcp()?;
 
@@ -1539,7 +1589,110 @@ impl Factory {
             )))
             .mcp();
         };
+        let provider = provider_of(tracker);
+        let (binding, connection) = match self
+            .resolve_tracker_binding(job.org_id, job.repo_id, provider)
+            .await
+            .map_err(|error| tracker_sync_error(error, true))?
+        {
+            BindingLookup::NotConfigured => {
+                return Err(of_core::Error::Invalid(format!(
+                    "this repo has no active {provider} binding — configure one before \
+                     calling sync_ticket"
+                )))
+                .mcp();
+            }
+            BindingLookup::Broken => {
+                return Err(of_core::Error::Invalid(format!(
+                    "this repo's {provider} binding points at a connection that no longer \
+                     exists — this needs an operator to fix, not a retry"
+                )))
+                .mcp();
+            }
+            BindingLookup::Ready(binding, connection) => (binding, connection),
+        };
+
+        let mut blockers = Vec::new();
+        if tracker == Tracker::Github {
+            // A malformed ticket_ref (anything not "owner/repo#N") is
+            // caller input, not a tracker outage: it will never succeed
+            // no matter how many times it's retried. Catching it here,
+            // ahead of the outbound calls, keeps it out of
+            // `tracker_sync_error`'s retriable bucket — the parse
+            // failure inside `sync_github_job` itself is a `String`
+            // with no room to carry that distinction, so it must not be
+            // the thing this checks.
+            let Some((owner, repo, issue_number)) = parse_github_ticket_ref(&ticket_ref) else {
+                return Err(of_core::Error::Invalid(format!(
+                    "job {} has a ticket_ref {ticket_ref:?} that is not a valid GitHub \
+                     issue reference (expected \"owner/repo#number\") — relink it with \
+                     link_ticket before calling sync_ticket again",
+                    job.id
+                )))
+                .mcp();
+            };
+            let issue = self
+                .read_github_issue(&job, &connection.external_id, owner, repo, issue_number)
+                .await
+                .map_err(|error| tracker_sync_error(error, true))?;
+
+            // A short "#N" on the issue means an issue in the same repository.
+            let mut tickets: Vec<TicketQuery> = Vec::new();
+            for raw in blocked_by(issue.body.as_deref().unwrap_or_default()) {
+                let qualified = if raw.starts_with('#') {
+                    format!("{owner}/{repo}{raw}")
+                } else {
+                    raw
+                };
+                match JobRef::parse(&qualified) {
+                    Ok(JobRef::Ticket(t)) if !tickets.contains(&t) => tickets.push(t),
+                    Ok(_) => {}
+                    // Reachable only if the job's own owner/repo is outside the
+                    // reference grammar, in which case no job could match it.
+                    Err(error) => {
+                        tracing::warn!(job_id = %job.id, %error, "skipping a Blocked by reference");
+                    }
+                }
+            }
+
+            // Before any write-back: a tracker failure after this leaves the
+            // dependencies in place, and a retry reports them as `already`.
+            let mut tx = self.tx(&caller).await?;
+            // An `updated_at` newer than the revision otto-tower last stored
+            // is a change it did not make. Whether it makes the job stale is
+            // decided at read time, against when the description was written.
+            let changed = issue.updated_at.as_deref().and_then(parse_remote_revision);
+            let stored = job
+                .remote_revision
+                .as_deref()
+                .and_then(parse_remote_revision);
+            if let Some(at) = changed.filter(|at| stored.is_none_or(|s| *at > s)) {
+                tx.note_ticket_changed(&job.id, at).await.mcp()?;
+            }
+            blockers = tx
+                .add_ticket_dependencies(&job.id, &tickets, &team)
+                .await
+                .map_err(|e| redact_foreign_ids(&team, e))
+                .mcp()?;
+            if job.status == Status::Pending {
+                // Nothing to post for a job nobody has picked up yet: the read
+                // is the whole call. Recorded last, as below.
+                let job = tx.get_job_visible(&job.id, &team).await.mcp()?;
+                tx.commit().await.mcp()?;
+                let mut charge_tx = self.tx(&caller).await?;
+                self.charge(&mut charge_tx, &caller, "sync_ticket").await?;
+                charge_tx.commit().await.mcp()?;
+                return Ok(Json(out::SyncTicketOut { job, blockers }));
+            }
+            tx.commit().await.mcp()?;
+        }
+
         let (transition, detail) = match job.status {
+            // Only a JIRA job gets here pending: a pending GitHub job has
+            // returned above, after its read. JIRA has no read path here, so
+            // a pending JIRA job has nothing to post and nothing to read. This
+            // runs after the binding lookup, so a job with nowhere to sync to
+            // hears that first.
             Status::Pending => {
                 return Err(of_core::Error::Invalid(format!(
                     "job {} is still pending — nothing has happened to it yet to sync to its ticket",
@@ -1579,49 +1732,9 @@ impl Factory {
             ),
         };
 
-        let provider = provider_of(tracker);
-        let (binding, connection) = match self
-            .resolve_tracker_binding(job.org_id, job.repo_id, provider)
-            .await
-            .map_err(|error| tracker_sync_error(error, true))?
-        {
-            BindingLookup::NotConfigured => {
-                return Err(of_core::Error::Invalid(format!(
-                    "this repo has no active {provider} binding — configure one before \
-                     calling sync_ticket"
-                )))
-                .mcp();
-            }
-            BindingLookup::Broken => {
-                return Err(of_core::Error::Invalid(format!(
-                    "this repo's {provider} binding points at a connection that no longer \
-                     exists — this needs an operator to fix, not a retry"
-                )))
-                .mcp();
-            }
-            BindingLookup::Ready(binding, connection) => (binding, connection),
-        };
-
         let plan = outbound_decision(transition, tracker, detail.as_deref());
         let job = match tracker {
             Tracker::Github => {
-                // A malformed ticket_ref (anything not "owner/repo#N") is
-                // caller input, not a tracker outage: it will never succeed
-                // no matter how many times it's retried. Catching it here,
-                // ahead of the outbound call, keeps it out of
-                // `tracker_sync_error`'s retriable bucket — the parse
-                // failure inside `sync_github_job` itself is a `String`
-                // with no room to carry that distinction, so it must not be
-                // the thing this checks.
-                if parse_github_ticket_ref(&ticket_ref).is_none() {
-                    return Err(of_core::Error::Invalid(format!(
-                        "job {} has a ticket_ref {ticket_ref:?} that is not a valid GitHub \
-                         issue reference (expected \"owner/repo#number\") — relink it with \
-                         link_ticket before calling sync_ticket again",
-                        job.id
-                    )))
-                    .mcp();
-                }
                 let outcome = self
                     .sync_github_job(&job, &ticket_ref, &connection.external_id, &plan)
                     .await
@@ -1715,6 +1828,6 @@ impl Factory {
         // loop-safety state that must land whoever may see the job now. What
         // is decided again is what the caller gets back. A job whose repo moved
         // out of their teams mid-call is `job_not_found`, not returned.
-        Ok(Json(out::JobOut { job }))
+        Ok(Json(out::SyncTicketOut { job, blockers }))
     }
 }

@@ -1,5 +1,6 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use of_core::jobs::{Job, Status, Tracker};
+use of_core::ticket_ref::JobRef;
 use of_core::trackers::{Provider, TrackerBinding};
 
 use crate::jira::Transition;
@@ -238,7 +239,9 @@ pub fn normalize_remote_revision(raw: Option<&str>) -> Option<String> {
         .map(|timestamp| timestamp.to_rfc3339_opts(SecondsFormat::AutoSi, true))
 }
 
-fn parse_remote_revision(raw: &str) -> Option<DateTime<Utc>> {
+/// A tracker revision (an RFC 3339 `updated_at`) as a time, or `None` when it
+/// does not parse: an unreadable revision is treated as no revision.
+pub fn parse_remote_revision(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|timestamp| timestamp.with_timezone(&Utc))
@@ -305,5 +308,160 @@ fn normalized_jira_category(category: &str) -> String {
         "new" | "to do" | "todo" => "new".into(),
         "done" => "done".into(),
         other => other.into(),
+    }
+}
+
+/// Most references [`blocked_by`] returns for one issue body.
+pub const MAX_BLOCKED_BY: usize = 20;
+
+/// The issue references named on "Blocked by" lines of an issue body, in order
+/// of first appearance, deduplicated, at most [`MAX_BLOCKED_BY`].
+///
+/// A line counts when it contains the phrase `blocked by` (any case, not as
+/// the tail of a longer word such as "unblocked by") outside a fenced code
+/// block. Everything after the phrase to the end of the line is searched for
+/// `#N` and `OWNER/REPO#N`, whatever separates them, so list markers, quotes
+/// and emphasis need no handling of their own. Each candidate is validated by
+/// [`JobRef::parse`], the grammar every job argument uses, so nothing here can
+/// accept a reference a tool would refuse; one it refuses is skipped. Each is
+/// returned in its normalized form ([`of_core::ticket_ref::TicketQuery::exact`]:
+/// lowercased, no leading zeros), which is also what duplicates collapse on.
+///
+/// The cap bounds the lookups a hostile issue body can make one `sync_ticket`
+/// call perform.
+pub fn blocked_by(body: &str) -> Vec<String> {
+    const PHRASE: &str = "blocked by";
+    let mut found: Vec<String> = Vec::new();
+    // The character that opened the current fence, if inside one. A fence is
+    // closed only by the same character, as CommonMark has it, so a `~~~` line
+    // inside a backtick block does not end it.
+    let mut fence: Option<char> = None;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if let Some(marker) = ['`', '~']
+            .into_iter()
+            .find(|c| trimmed.starts_with(&c.to_string().repeat(3)))
+        {
+            fence = match fence {
+                None => Some(marker),
+                Some(open) if open == marker => None,
+                Some(open) => Some(open),
+            };
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
+        // ASCII lowercasing keeps byte offsets, so `start` indexes `line` too.
+        let lower = line.to_ascii_lowercase();
+        let Some(start) = lower.match_indices(PHRASE).map(|(i, _)| i).find(|&i| {
+            !lower[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric())
+        }) else {
+            continue;
+        };
+        let rest = &line[start + PHRASE.len()..];
+        let tokens = rest.split(|c: char| {
+            !(c.is_ascii_alphanumeric() || matches!(c, '#' | '/' | '.' | '_' | '-'))
+        });
+        for token in tokens {
+            // A sentence's full stop ("Blocked by #14.") is not part of the
+            // reference, and a well-formed reference never ends in a dot.
+            let token = token.trim_end_matches('.');
+            if !token.contains('#') {
+                continue;
+            }
+            let Ok(JobRef::Ticket(query)) = JobRef::parse(token) else {
+                continue;
+            };
+            let exact = query.exact();
+            if !found.contains(&exact) {
+                found.push(exact);
+                if found.len() == MAX_BLOCKED_BY {
+                    return found;
+                }
+            }
+        }
+    }
+    found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_single_reference() {
+        assert_eq!(blocked_by("Blocked by #925"), vec!["#925"]);
+    }
+
+    #[test]
+    fn several_references_with_any_separators() {
+        assert_eq!(
+            blocked_by("**Blocked by:** #1, #2 and acme/x#3"),
+            vec!["#1", "#2", "acme/x#3"]
+        );
+    }
+
+    #[test]
+    fn the_phrase_is_case_insensitive() {
+        assert_eq!(blocked_by("BLOCKED BY #4"), vec!["#4"]);
+        assert_eq!(blocked_by("- [ ] blocked By #5"), vec!["#5"]);
+    }
+
+    #[test]
+    fn a_reference_before_the_phrase_is_ignored() {
+        assert_eq!(blocked_by("#7 is blocked by #8"), vec!["#8"]);
+    }
+
+    #[test]
+    fn lines_inside_fences_are_ignored() {
+        let body = "```\nBlocked by #1\n```\n~~~rust\nBlocked by #2\n~~~\nBlocked by #3";
+        assert_eq!(blocked_by(body), vec!["#3"]);
+        // A `~~~` line does not close a backtick fence.
+        let body = "```\n~~~\nBlocked by #1\n```\nBlocked by #2";
+        assert_eq!(blocked_by(body), vec!["#2"]);
+    }
+
+    #[test]
+    fn duplicates_collapse() {
+        assert_eq!(
+            blocked_by("Blocked by #1, #1\nBlocked by #01 and Acme/X#2, acme/x#2"),
+            vec!["#1", "acme/x#2"]
+        );
+    }
+
+    #[test]
+    fn at_most_twenty_are_kept() {
+        let refs: Vec<String> = (1..=30).map(|n| format!("#{n}")).collect();
+        let got = blocked_by(&format!("Blocked by {}", refs.join(" ")));
+        assert_eq!(got.len(), MAX_BLOCKED_BY);
+        assert_eq!(got, refs[..20].to_vec());
+    }
+
+    #[test]
+    fn malformed_tokens_are_skipped() {
+        assert_eq!(blocked_by("Blocked by #abc, a/b/c#1 and #9"), vec!["#9"]);
+    }
+
+    #[test]
+    fn several_lines_combine() {
+        assert_eq!(
+            blocked_by("Intro #100\nBlocked by #1\nsome text\n> Blocked by #2."),
+            vec!["#1", "#2"]
+        );
+    }
+
+    #[test]
+    fn no_phrase_no_references() {
+        assert!(blocked_by("Fixes #1, see #2").is_empty());
+        assert!(blocked_by("").is_empty());
+    }
+
+    #[test]
+    fn the_phrase_inside_a_longer_word_does_not_count() {
+        assert!(blocked_by("Unblocked by #1").is_empty());
     }
 }
