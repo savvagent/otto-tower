@@ -191,15 +191,22 @@ pub struct Job {
     /// request" — only `cancel_requested_at == None` means that.
     pub cancel_requested_by: Option<UserId>,
     pub cancel_reason: Option<String>,
-    /// The newest change to the linked issue that otto-tower did not make
-    /// itself: a human comment on it, or a `sync_ticket` pull that found it
-    /// edited. `None` when no such change has been seen. On its own this says
-    /// nothing about whether the job is out of date; read `ticketStale`.
+    /// When the linked issue last changed in a way otto-tower did not make
+    /// itself, as far as otto-tower has seen. Set by a comment on the linked
+    /// GitHub issue from someone other than a bot, arriving by webhook, or by
+    /// `sync_ticket` finding the issue changed since otto-tower last touched
+    /// it. An edit to the issue's own title or body arriving by webhook does
+    /// not set it (that rewrites this job's description instead). `None` when
+    /// no such change has been seen. On its own this says nothing about
+    /// whether the job is out of date; read `ticketStale`.
     pub ticket_changed_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// True when the linked issue has had a comment or change since this job's
-    /// title or description were last written. Re-read the issue before
-    /// relying on the description, and call `update_job` with a new title or
-    /// description to bring it up to date (which clears this). Always false
+    /// True when `ticketChangedAt` is later than this job's title or
+    /// description were last written (or than the job's creation): someone
+    /// has commented on or changed the issue since, and the description may
+    /// not reflect it. Re-read the issue before relying on the description.
+    /// Only `update_job` with a new title or description clears this; an
+    /// issue edit that rewrites the description by webhook does not, because
+    /// the comment that set it is still not in the description. Always false
     /// for a job with no linked issue.
     pub ticket_stale: bool,
 }
@@ -1160,9 +1167,13 @@ impl JobsExt for Tx<'_> {
         }
 
         let job = sqlx::query_as(&format!(
-            // `described_at`: the description now *is* the issue body, so any
-            // change recorded before this rewrite is absorbed by it.
-            "UPDATE jobs SET title = $3, description = $4, described_at = now(), \
+            // `described_at` is deliberately left alone. The body edit is
+            // absorbed into the description, but a comment noted before it
+            // is not, and clearing the mark here would hide an unread comment
+            // behind an edit as small as a label change. Only `update_job`
+            // with a title or description (a caller saying it has re-read the
+            // issue) clears it.
+            "UPDATE jobs SET title = $3, description = $4, \
                     remote_revision = COALESCE($5, remote_revision) \
              WHERE org_id = $1 AND id = $2 RETURNING {JOB_COLS}"
         ))

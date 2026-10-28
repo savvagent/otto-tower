@@ -1336,3 +1336,31 @@ async fn note_ticket_changed_never_crosses_orgs(pool: PgPool) {
     assert!(!a_job.ticket_stale);
     assert_eq!(a_job.ticket_changed_at, None);
 }
+
+/// A webhook issue edit rewrites the description but not `described_at`: a
+/// comment noted before it is still not in the description, so the job stays
+/// stale until `update_job` says the issue was re-read.
+#[sqlx::test]
+async fn update_from_ticket_keeps_an_earlier_mark(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    note(
+        &db,
+        &t,
+        &j.id,
+        j.created_at + chrono::Duration::milliseconds(1),
+    )
+    .await;
+    tick().await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let updated = tx
+        .update_from_ticket(&j.id, "edited title", Some("edited body"), None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(updated.description.as_deref(), Some("edited body"));
+    assert!(updated.ticket_stale);
+    assert!(read(&db, &t, &j.id).await.ticket_stale);
+}

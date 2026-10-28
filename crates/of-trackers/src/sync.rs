@@ -25,14 +25,14 @@ pub enum InboundDecision {
         error: Option<String>,
         remote_revision: Option<String>,
     },
-    /// Someone commented on (or edited or deleted a comment on) the issue of a
-    /// live job: mark the job's description as possibly out of date
-    /// (`note_ticket_changed` at this revision) without rewriting it. GitHub
-    /// only. `remote_revision` is the issue's normalized `updated_at`, always
-    /// RFC 3339, and is stored as the job's revision so a redelivery is
-    /// dropped as an echo.
+    /// Someone other than a bot commented on (or edited or deleted a comment
+    /// on) the issue of a live job: mark the job's description as possibly out
+    /// of date (`note_ticket_changed(at)`) without rewriting it. GitHub only.
+    /// `at` is the issue's `updated_at`, already parsed. It is deliberately not
+    /// a revision to store: see the webhook route for why `Changed` leaves the
+    /// job's `remote_revision` alone.
     Changed {
-        remote_revision: String,
+        at: DateTime<Utc>,
     },
     NoOp,
 }
@@ -99,10 +99,9 @@ pub fn inbound_decision(
             }
         }
         // After the close arm, so a comment event that also reports a close
-        // still closes. Replaces the `Update` a comment edit used to produce
-        // here: the comment event's issue snapshot carries the same body the
-        // job already has, so that rewrote nothing, while the comment itself
-        // is exactly what the description has not absorbed.
+        // still closes. A comment is what a job's description has not
+        // absorbed, so it marks the job rather than rewriting it: the comment
+        // event's issue snapshot carries the same body the job already has.
         Some(_job)
             if event.provider == Provider::Github
                 && event.kind == WebhookEventKind::IssueComment =>
@@ -112,17 +111,24 @@ pub fn inbound_decision(
             // comment's webhook can arrive before the write-back has stored
             // its `remote_revision`, so the echo check above cannot catch it.
             // It also ignores other apps' bots, which is the intent: a CI
-            // status comment is not a change to what the work is.
+            // status comment is not a change to what the work is. It assumes
+            // write-backs are posted as the GitHub App (`GithubAppClient`
+            // authenticates as an installation), which they are.
             let by_bot = event
                 .issue
                 .comment
                 .as_ref()
                 .is_some_and(|comment| comment.author_is_bot);
-            match remote_revision {
-                // Without the issue's own timestamp there is no time to record
-                // and no echo check was possible, so the comment is not counted
-                // rather than stamped with a guessed time.
-                Some(remote_revision) if !by_bot => InboundDecision::Changed { remote_revision },
+            match event
+                .issue
+                .updated_at
+                .as_deref()
+                .and_then(parse_remote_revision)
+            {
+                // Without the issue's own timestamp there is no time to record,
+                // so the comment is not counted rather than stamped with a
+                // guessed time.
+                Some(at) if !by_bot => InboundDecision::Changed { at },
                 _ => InboundDecision::NoOp,
             }
         }

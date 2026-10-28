@@ -470,6 +470,10 @@ fn outbound_cancelled_never_transitions_or_closes_a_tracker() {
     assert!(github.github_close.is_none());
 }
 
+fn at(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
+    rfc3339.parse().expect("test timestamp")
+}
+
 /// A human comment is a change to the issue the job's description has not
 /// absorbed. Every comment action counts: an edit or a deletion changes what
 /// the thread says just as a new comment does.
@@ -487,7 +491,7 @@ fn inbound_github_human_comment_on_a_live_job_is_changed() {
         assert_eq!(
             of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
             of_trackers::sync::InboundDecision::Changed {
-                remote_revision: "2026-09-03T18:00:00Z".into(),
+                at: at("2026-09-03T18:00:00Z"),
             },
             "{action}"
         );
@@ -637,7 +641,7 @@ fn inbound_github_comment_on_a_closed_issue_is_changed_not_a_close() {
     assert_eq!(
         of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
         of_trackers::sync::InboundDecision::Changed {
-            remote_revision: "2026-09-03T12:00:00Z".into(),
+            at: at("2026-09-03T12:00:00Z"),
         }
     );
 }

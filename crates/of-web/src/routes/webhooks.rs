@@ -276,9 +276,13 @@ async fn apply(
                     "webhook verified for a connection with no matching repo binding"
                 );
             }
-            // GitHub comments are applied too, as the drift signal
-            // (`InboundDecision::Changed`). JIRA comment events stay ignored
-            // here, as they always have been.
+            // Issue events from either tracker, plus GitHub comment events,
+            // which are the only comment kind applied: they carry the drift
+            // signal (`InboundDecision::Changed`). JIRA comment events stay
+            // skipped, as they always have been: their payload says nothing
+            // about who wrote the comment, so otto-tower's own write-back
+            // comments could not be told apart from a person's and every
+            // claim or completion note would flag its own job.
             let applies = event.kind == of_trackers::webhook::WebhookEventKind::Issue
                 || provider == Provider::Github;
             if applies {
@@ -330,27 +334,25 @@ async fn apply(
                                     .map_err(ApiError::from)?;
                                 }
                             }
-                            InboundDecision::Changed { remote_revision } => {
+                            InboundDecision::Changed { at } => {
                                 if let Some(existing) = existing.as_ref() {
-                                    // `inbound_decision` hands back only a
-                                    // revision it normalized from RFC 3339,
-                                    // so a failure here is a bug there.
-                                    let at = chrono::DateTime::parse_from_rfc3339(&remote_revision)
-                                        .map_err(|error| {
-                                            ApiError::internal(
-                                                "inbound comment revision was not RFC 3339",
-                                                error,
-                                            )
-                                        })?
-                                        .with_timezone(&chrono::Utc);
-                                    tx.note_ticket_changed(&existing.id, at)
-                                        .await
-                                        .map_err(ApiError::from)?;
-                                    // Stored so a redelivery of this comment
-                                    // is dropped as an echo.
-                                    tx.set_remote_revision(&existing.id, &remote_revision)
-                                        .await
-                                        .map_err(ApiError::from)?;
+                                    // `remote_revision` is deliberately left
+                                    // where it was. Advancing it to the
+                                    // comment's time would make the echo check
+                                    // drop an earlier `issues` edit that GitHub
+                                    // delivers after the comment, losing that
+                                    // edit. A redelivered comment needs no echo
+                                    // guard: `note_ticket_changed` keeps the
+                                    // later time, so applying it twice is the
+                                    // same as once.
+                                    match tx.note_ticket_changed(&existing.id, at).await {
+                                        // The job was deleted between the
+                                        // lookup above and this write: there
+                                        // is nothing left to mark, and that is
+                                        // not the sender's error to retry.
+                                        Ok(()) | Err(of_core::Error::JobNotFound(_)) => {}
+                                        Err(error) => return Err(ApiError::from(error)),
+                                    }
                                 }
                             }
                             InboundDecision::Close {
