@@ -239,7 +239,8 @@ first appearance, deduplicated:
    per reference:
    - holds the job's repo while it checks the job is visible (`get_job_visible_held`), because this
      is a write and `sync_ticket`'s first read has already committed;
-   - resolves with exactly §1's visible-matching rules, excluding the job itself, and re-checks a
+   - resolves with exactly §1's visible-matching rules (the job itself included, so naming its own
+     issue is reported as `cycle`, not hidden), and re-checks a
      unique candidate with `get_job_visible_held` (a failure is `no_job`);
    - `none` → outcome `no_job` (job left alone, as the AC asks);
    - 2+ → `ambiguous` with the visible ids;
