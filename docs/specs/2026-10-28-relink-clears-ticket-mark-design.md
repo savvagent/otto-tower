@@ -50,7 +50,7 @@ created_at)`.
 
 ## Scope
 
-**In:** the `UPDATE` in `link_ticket`; its why-comment; tests in `crates/of-core/tests/jobs.rs`
+**In:** the `UPDATE` in `link_ticket`; its why-comment; the `Job::ticket_changed_at` and `Job::ticket_stale` doc comments (they render into the MCP output schema, and `ticket_stale`'s said only `update_job` clears it); tests in `crates/of-core/tests/jobs.rs`
 and `crates/of-web/tests/webhooks_http.rs`.
 
 **Out:**

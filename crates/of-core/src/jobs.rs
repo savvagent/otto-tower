@@ -197,17 +197,20 @@ pub struct Job {
     /// `sync_ticket` finding the issue changed since otto-tower last touched
     /// it. An edit to the issue's own title or body arriving by webhook does
     /// not set it (that rewrites this job's description instead). `None` when
-    /// no such change has been seen. On its own this says nothing about
-    /// whether the job is out of date; read `ticketStale`.
+    /// no such change has been seen, including since `link_ticket` last
+    /// moved the job to a different issue (the old issue's changes do not
+    /// carry over). On its own this says nothing about whether the job is
+    /// out of date; read `ticketStale`.
     pub ticket_changed_at: Option<chrono::DateTime<chrono::Utc>>,
     /// True when `ticketChangedAt` is later than this job's title or
     /// description were last written (or than the job's creation): someone
     /// has commented on or changed the issue since, and the description may
     /// not reflect it. Re-read the issue before relying on the description.
-    /// Only `update_job` with a new title or description clears this; an
-    /// issue edit that rewrites the description by webhook does not, because
-    /// the comment that set it is still not in the description. Always false
-    /// for a job with no linked issue.
+    /// `update_job` with a new title or description clears this, and so does
+    /// `link_ticket` to a different issue (until a change on that issue is
+    /// seen); an issue edit that rewrites the description by webhook does not,
+    /// because the comment that set it is still not in the description.
+    /// Always false for a job with no linked issue.
     pub ticket_stale: bool,
 }
 
@@ -1110,8 +1113,21 @@ impl JobsExt for Tx<'_> {
         // currently points at. Relinking to a different ticket without
         // clearing it would make that ticket's first genuine webhook look
         // like an old echo of the previous one and get silently dropped.
+        //
+        // ticket_changed_at is the newest foreign change seen on the linked
+        // ticket, so it belongs to that ticket too: kept on a relink to the
+        // same ticket (clearing it would hide an unread change to the very
+        // ticket the job still describes), cleared on a different one, where
+        // it would keep the job stale over another ticket's comment and make
+        // the comment guard drop the new ticket's earlier comments as already
+        // counted. The right-hand side reads the row as it was before this
+        // UPDATE. described_at is left alone: a relink rewrites no text, so
+        // the job's text is exactly as old as it was.
         let updated = sqlx::query_as(&format!(
-            "UPDATE jobs SET tracker = $3, ticket_ref = $4, remote_revision = NULL \
+            "UPDATE jobs SET tracker = $3, ticket_ref = $4, remote_revision = NULL, \
+                    ticket_changed_at = CASE WHEN tracker IS NOT DISTINCT FROM $3 \
+                                              AND ticket_ref IS NOT DISTINCT FROM $4 \
+                                             THEN ticket_changed_at END \
              WHERE org_id = $1 AND id = $2 RETURNING {JOB_COLS}"
         ))
         .bind(org)

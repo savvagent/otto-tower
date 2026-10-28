@@ -1372,6 +1372,87 @@ async fn a_conditional_mark_skips_a_job_relinked_in_between(pool: PgPool) {
     assert!(read(&db, &t, &j.id).await.ticket_stale);
 }
 
+/// `link_ticket` to `ticket` and mark it at `at`, as a comment webhook would.
+async fn link_and_mark(
+    db: &otto_tenant::Db,
+    t: &common::Tenant,
+    id: &JobId,
+    ticket: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) {
+    let mut tx = db.begin(t.org).await.unwrap();
+    tx.link_ticket(id, Tracker::Github, ticket).await.unwrap();
+    assert!(tx
+        .note_ticket_changed_if_linked(id, Tracker::Github, ticket, at)
+        .await
+        .unwrap());
+    tx.commit().await.unwrap();
+}
+
+/// The old ticket's mark describes a ticket the job no longer points at: a
+/// relink clears it, and a change on the new ticket earlier than the old mark
+/// still marks the job.
+#[sqlx::test]
+async fn relinking_to_another_ticket_clears_the_old_tickets_mark(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    let old_mark = chrono::Utc::now() + chrono::Duration::minutes(10);
+    link_and_mark(&db, &t, &j.id, "acme/api#1", old_mark).await;
+    assert!(read(&db, &t, &j.id).await.ticket_stale);
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let relinked = tx
+        .link_ticket(&j.id, Tracker::Github, "acme/api#2")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(relinked.ticket_changed_at, None);
+    assert!(!relinked.ticket_stale);
+    let reread = read(&db, &t, &j.id).await;
+    assert_eq!(reread.ticket_changed_at, None);
+    assert!(!reread.ticket_stale);
+
+    let new_change = old_mark - chrono::Duration::minutes(9);
+    let mut tx = db.begin(t.org).await.unwrap();
+    assert!(tx
+        .note_ticket_changed_if_linked(&j.id, Tracker::Github, "acme/api#2", new_change)
+        .await
+        .unwrap());
+    tx.commit().await.unwrap();
+    let marked = read(&db, &t, &j.id).await;
+    assert!(marked.ticket_stale);
+    assert_eq!(
+        marked.ticket_changed_at.map(|t| t.timestamp_micros()),
+        Some(new_change.timestamp_micros())
+    );
+}
+
+/// Relinking to the ticket the job already points at changes nothing the job
+/// describes, so an unread change on that ticket stays marked.
+#[sqlx::test]
+async fn relinking_to_the_same_ticket_keeps_its_mark(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    let at = chrono::Utc::now() + chrono::Duration::minutes(10);
+    link_and_mark(&db, &t, &j.id, "acme/api#1", at).await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let relinked = tx
+        .link_ticket(&j.id, Tracker::Github, "acme/api#1")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(relinked.ticket_stale);
+    let reread = read(&db, &t, &j.id).await;
+    assert!(reread.ticket_stale);
+    assert_eq!(
+        reread.ticket_changed_at.map(|t| t.timestamp_micros()),
+        Some(at.timestamp_micros())
+    );
+}
+
 /// A webhook issue edit rewrites the description but not `described_at`: a
 /// comment noted before it is still not in the description, so the job stays
 /// stale until `update_job` says the issue was re-read.
