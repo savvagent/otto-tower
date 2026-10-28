@@ -312,8 +312,11 @@ on the description, and call update_job to bring it up to date (which clears thi
   `UPDATE jobs SET ticket_changed_at = GREATEST(COALESCE(ticket_changed_at, $3), $3) WHERE org_id = $1 AND id = $2`.
 - `update_job` sets `described_at = now()` when `title` or `description` is passed. That clears
   `ticketStale` unless a newer change arrives.
-- `update_from_ticket` (webhook body edit) sets `described_at = now()` as well, because the
-  description now is the issue body.
+- `update_from_ticket` (webhook body edit) does **not** touch `described_at` (revised in
+  review). The body edit is absorbed into the description, but a comment noted before it is not,
+  and clearing on the edit would hide an unread comment behind something as small as a label
+  change. Only a caller saying it has re-read the issue (`update_job` with a title or description)
+  clears the mark.
 
 ### Signals
 
@@ -324,9 +327,12 @@ on the description, and call update_job to bring it up to date (which clears thi
    is. This replaces the `Update` that a comment `edited` action produced and the `NoOp` for
    `created`/`deleted`. The comment event's issue snapshot carries the same body, so the `Update`
    rewrote nothing new. The existing echo check (`is_stale_or_echoed`) runs first, as now. The
-   webhook route applies `Changed` with
-   `note_ticket_changed(existing.id, remote_revision parsed)` and
-   `set_remote_revision`. The bot filter is what keeps otto-tower's own write-back comment from
+   webhook route applies `Changed` with `note_ticket_changed(existing.id, at)` and does **not**
+   advance `remote_revision` (revised in review). Advancing it would make `is_stale_or_echoed` drop
+   an earlier issue edit that GitHub delivers after the comment, losing that edit, and a
+   redelivered comment needs no echo guard because `note_ticket_changed` is idempotent
+   (`GREATEST`). `Changed` carries the parsed `DateTime<Utc>`, so the route does no re-parse. The
+   bot filter is what keeps otto-tower's own write-back comment from
    flagging its own job: the webhook for that comment can arrive before the write-back has stored
    its `remote_revision`.
 2. **`sync_ticket` pull (GitHub).** The fetched `updated_at`, when it is later than the job's
@@ -334,9 +340,12 @@ on the description, and call update_job to bring it up to date (which clears thi
    `note_ticket_changed(updated_at)`. The SQL comparison with `described_at`/`created_at` decides
    whether it counts as stale. A job created after the issue's last change stays clean.
 
-An `issues` `edited` event keeps its existing `Update` path. That path sets `described_at = now()`
-and never touches `ticket_changed_at`, so an earlier comment's mark is cleared only when it is
-older than the rewrite.
+An `issues` `edited` event keeps its existing `Update` path, which rewrites the description and
+leaves both `ticket_changed_at` and `described_at` alone, so an earlier comment's mark survives it.
+
+GitHub's timestamps and the database's `now()` come from different clocks. A comment made a
+second or so after an `update_job` can land on the wrong side of the comparison. That is
+accepted: the marker is a hint to re-read the issue, not a guarantee.
 
 ### What the marker cannot see
 
