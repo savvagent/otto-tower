@@ -681,6 +681,20 @@ pub trait JobsExt {
         at: chrono::DateTime<chrono::Utc>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
+    /// [`Self::note_ticket_changed`] for a caller that found the job from an
+    /// unlocked read of its ticket link, as the webhook route does: the mark
+    /// lands only if the job is still linked to `(tracker, ticket_ref)`, so a
+    /// `link_ticket` that relinked it in between does not get the old issue's
+    /// change pinned on the new one. `Ok(false)` means nothing matched (the
+    /// job was relinked or deleted), which is nothing to do, not an error.
+    fn note_ticket_changed_if_linked(
+        &mut self,
+        id: &JobId,
+        tracker: Tracker,
+        ticket_ref: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> impl std::future::Future<Output = Result<bool>> + Send;
+
     /// Edit a pending job. Every field is optional; `None` leaves it unchanged.
     fn update_job(
         &mut self,
@@ -1938,6 +1952,28 @@ impl JobsExt for Tx<'_> {
             return Err(Error::JobNotFound(id.clone()));
         }
         Ok(())
+    }
+
+    async fn note_ticket_changed_if_linked(
+        &mut self,
+        id: &JobId,
+        tracker: Tracker,
+        ticket_ref: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let updated = sqlx::query(
+            "UPDATE jobs SET ticket_changed_at = GREATEST(COALESCE(ticket_changed_at, $3), $3) \
+             WHERE org_id = $1 AND id = $2 AND tracker = $4 AND ticket_ref = $5",
+        )
+        .bind(self.org())
+        .bind(id)
+        .bind(at)
+        .bind(tracker)
+        .bind(ticket_ref)
+        .execute(self.conn())
+        .await?
+        .rows_affected();
+        Ok(updated > 0)
     }
 
     async fn update_job(

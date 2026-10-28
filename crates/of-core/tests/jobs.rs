@@ -1337,6 +1337,41 @@ async fn note_ticket_changed_never_crosses_orgs(pool: PgPool) {
     assert_eq!(a_job.ticket_changed_at, None);
 }
 
+/// The webhook finds its job by an unlocked read of the ticket link, so its
+/// mark is conditional: once the job is relinked, the old issue's change does
+/// not land on it.
+#[sqlx::test]
+async fn a_conditional_mark_skips_a_job_relinked_in_between(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    let at = chrono::Utc::now() + chrono::Duration::minutes(1);
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    tx.link_ticket(&j.id, Tracker::Github, "acme/api#1")
+        .await
+        .unwrap();
+    tx.link_ticket(&j.id, Tracker::Github, "acme/api#2")
+        .await
+        .unwrap();
+    let marked = tx
+        .note_ticket_changed_if_linked(&j.id, Tracker::Github, "acme/api#1", at)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(!marked);
+    assert_eq!(read(&db, &t, &j.id).await.ticket_changed_at, None);
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let marked = tx
+        .note_ticket_changed_if_linked(&j.id, Tracker::Github, "acme/api#2", at)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(marked);
+    assert!(read(&db, &t, &j.id).await.ticket_stale);
+}
+
 /// A webhook issue edit rewrites the description but not `described_at`: a
 /// comment noted before it is still not in the description, so the job stays
 /// stale until `update_job` says the issue was re-read.

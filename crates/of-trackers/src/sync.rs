@@ -317,6 +317,16 @@ fn normalized_jira_category(category: &str) -> String {
 /// Most references [`blocked_by`] returns for one issue body.
 pub const MAX_BLOCKED_BY: usize = 20;
 
+/// `line` with any leading blockquote markers (`>`, `> >`, ...) and the
+/// whitespace around them removed.
+fn without_quote_markers(line: &str) -> &str {
+    let mut rest = line.trim_start();
+    while let Some(inner) = rest.strip_prefix('>') {
+        rest = inner.trim_start();
+    }
+    rest
+}
+
 /// The issue references named on "Blocked by" lines of an issue body, in order
 /// of first appearance, deduplicated, at most [`MAX_BLOCKED_BY`].
 ///
@@ -344,7 +354,9 @@ pub fn blocked_by(body: &str) -> Vec<String> {
     // stays an example rather than becoming a dependency.
     let mut fence: Option<(char, usize)> = None;
     for line in body.lines() {
-        let trimmed = line.trim_start();
+        // A fence inside a blockquote (`> ~~~`) is still a fence, so its
+        // quote markers come off before looking for one.
+        let trimmed = without_quote_markers(line);
         let run = |c: char| trimmed.chars().take_while(|&x| x == c).count();
         let marker = ['`', '~'].into_iter().find(|&c| run(c) >= 3);
         match (fence, marker) {
@@ -515,6 +527,14 @@ mod tests {
         assert_eq!(blocked_by(body), vec!["#3"]);
         // A `~~~` line does not close a backtick fence.
         let body = "```\n~~~\nBlocked by #1\n```\nBlocked by #2";
+        assert_eq!(blocked_by(body), vec!["#2"]);
+    }
+
+    #[test]
+    fn a_fence_inside_a_blockquote_is_still_a_fence() {
+        let body = "> ~~~\n> Blocked by #14\n> ~~~\n> Blocked by #15";
+        assert_eq!(blocked_by(body), vec!["#15"]);
+        let body = "> > ```\n> > Blocked by #1\n> > ```\nBlocked by #2";
         assert_eq!(blocked_by(body), vec!["#2"]);
     }
 

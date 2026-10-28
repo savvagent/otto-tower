@@ -346,14 +346,21 @@ async fn apply(
                                     // guard: `note_ticket_changed` keeps the
                                     // later time, so applying it twice is the
                                     // same as once.
-                                    match tx.note_ticket_changed(&existing.id, at).await {
-                                        // The job was deleted between the
-                                        // lookup above and this write: there
-                                        // is nothing left to mark, and that is
-                                        // not the sender's error to retry.
-                                        Ok(()) | Err(of_core::Error::JobNotFound(_)) => {}
-                                        Err(error) => return Err(ApiError::from(error)),
-                                    }
+                                    //
+                                    // `existing` was read unlocked, so the
+                                    // mark is conditional on the job still
+                                    // being linked to this issue: a job
+                                    // relinked (or deleted) in between has
+                                    // nothing of this issue's to mark, and
+                                    // that is not the sender's error to retry.
+                                    tx.note_ticket_changed_if_linked(
+                                        &existing.id,
+                                        tracker,
+                                        &ticket_ref,
+                                        at,
+                                    )
+                                    .await
+                                    .map_err(ApiError::from)?;
                                 }
                             }
                             InboundDecision::Close {
