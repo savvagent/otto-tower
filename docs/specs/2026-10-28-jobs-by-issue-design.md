@@ -44,7 +44,8 @@ What the code already does, checked against `master` at `a609b44`:
    (`crates/of-mcp/src/tools/jobs.rs:1495-1502`). A dependency matters most on a pending job, so
    reading "Blocked by" through `sync_ticket` means it has to accept a pending job.
 4. **Stored `ticketRef`s are not uniform.** A webhook-created job stores
-   `"{repository.full_name}#{number}"` (`sync::ticket_ref`), and `add_job`/`link_ticket` store
+   `"{binding_external_ref}#{number}"` (`sync::ticket_ref`, `sync.rs:220`; for GitHub that is the
+   payload's `repository.full_name`), and `add_job`/`link_ticket` store
    whatever the caller typed. This org's own jobs say `savvagent/otto-factory#256` while the
    GitHub repo is now `savvagent/otto-tower`. Matching has to be lenient about case, and the
    short form `#N` has to match any owner/repo.
@@ -157,7 +158,9 @@ that hits two repos is ambiguous, and the refusal tells the agent to pass the fu
   - 2+ rows: `Error::AmbiguousTicket { ticket, jobs: Vec<JobId> }`, new code
     **`ambiguous_ticket_ref`**, not retriable. The message lists up to 10 ids (the 11th row only
     tells us to say "and more"): *"#928" matches job-52, job-61; pass one of those ids, or the full
-    owner/repo#928 form*.
+    owner/repo#928 form; list_jobs(ticket="#928") shows each one's status*. A common way to get
+    here is an issue whose first job failed and was re-queued as a new job, and the hint is aimed
+    at that case.
 
 Ambiguity is decided after the visibility filter, so the listed ids are only ones the caller can
 see. A hidden job never makes a reference ambiguous, and its existence never leaks.
@@ -245,7 +248,11 @@ first appearance, deduplicated:
 4. If the job is **pending**: commit and return, with no outbound write-back (there is still
    nothing to post). This replaces today's `invalid_argument` refusal for pending jobs.
 5. Otherwise: the existing write-back, unchanged.
-6. Record the call (`charge`) as today, after success.
+6. Record the call (`charge`) as today: in its own short `charge_tx`, opened after everything
+   else has committed (`tools/jobs.rs:1600-1602`), on **every** success path, the new pending
+   path included. It is never the first statement of the dependency transaction. Charging there
+   would roll a recorded call back with a failed tracker call that came after it, and that is the
+   reason the existing write-back paths already charge last.
 
 The dependency write happens before the outbound call. A tracker failure after it leaves the
 dependencies in place, and a retry is idempotent (`already`).
@@ -315,6 +322,23 @@ on the description, and call update_job to bring it up to date (which clears thi
    `note_ticket_changed(updated_at)`. The SQL comparison with `described_at`/`created_at` decides
    whether it counts as stale. A job created after the issue's last change stays clean.
 
+An `issues` `edited` event keeps its existing `Update` path. That path sets `described_at = now()`
+and never touches `ticket_changed_at`, so an earlier comment's mark is cleared only when it is
+older than the rewrite.
+
+### What the marker cannot see
+
+Both limits are inherited from the existing tracker wiring. Neither is new here, and tests pin
+both down:
+
+- **A repo with no active GitHub binding gets no signal at all.** There is no webhook, and
+  `sync_ticket` refuses with `NotConfigured` because it has no installation to read the issue
+  with. The motivating job-52 was in that situation. It is covered once its repo is bound, and
+  not before.
+- **An issue without the binding's trigger label gets no webhook signal.** `inbound_decision`
+  drops such events before anything else (`sync.rs:62`), so a job linked by `link_ticket` to an
+  unlabelled issue is refreshed only by calling `sync_ticket`.
+
 ## Error handling & edge cases
 
 - Malformed reference (`#`, `#abc`, `a#1`, `a/b/c#1`): `invalid_argument`, not retriable, both forms
@@ -353,7 +377,7 @@ on the description, and call update_job to bring it up to date (which clears thi
   job with a "Blocked by" line against a mocked GitHub (`GithubAppClient` with a test
   `api_base`, as `of-trackers`' own tests do; see Risks), and `ticketStale` in `ready`.
 - `of-web` `tests/webhooks_http.rs`: a signed human `issue_comment` webhook flips `ticketStale`, and
-  a bot one does not.
+  a bot one does not, and neither does a human one on an issue without the trigger label (§5 limits).
 
 ## Assumptions
 
@@ -365,7 +389,8 @@ on the description, and call update_job to bring it up to date (which clears thi
 - **Comment staleness only from non-bot authors.** CI bots and otto-tower's own App comment
   constantly, and treating those as scope changes would make the marker noise.
 - **Edits keep their current behaviour** (the description is rewritten for bound repos). The
-  marker covers what that path misses: comments, and unbound jobs refreshed by `sync_ticket`.
+  marker covers what that path misses: comments by webhook on labelled issues, and any change
+  `sync_ticket` sees on a bound repo (labelled or not). Unbound repos stay uncovered (§5).
 - **`sync_ticket` on a pending job is now allowed** (read only). Before, it was an error with
   nothing to retry, so no correct caller depends on it.
 - **The full form matches the stored spelling, not the repo's current GitHub name.** A renamed
