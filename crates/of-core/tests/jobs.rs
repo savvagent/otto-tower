@@ -1453,6 +1453,62 @@ async fn relinking_to_the_same_ticket_keeps_its_mark(pool: PgPool) {
     );
 }
 
+/// The ticket is the pair (tracker, ticket_ref): the same reference text on
+/// another tracker names a different ticket, so the old tracker's mark goes.
+#[sqlx::test]
+async fn relinking_to_another_tracker_with_the_same_ref_clears_the_mark(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    let at = chrono::Utc::now() + chrono::Duration::minutes(10);
+    link_and_mark(&db, &t, &j.id, "acme/api#1", at).await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    let relinked = tx
+        .link_ticket(&j.id, Tracker::Jira, "acme/api#1")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(relinked.ticket_changed_at, None);
+    assert!(!relinked.ticket_stale);
+    let reread = read(&db, &t, &j.id).await;
+    assert_eq!(reread.tracker, Some(Tracker::Jira));
+    assert_eq!(reread.ticket_changed_at, None);
+}
+
+/// A relink refused as ticket_already_linked changes nothing, the mark
+/// included: the clear rides in the same statement the refusal rolls back.
+#[sqlx::test]
+async fn a_refused_relink_keeps_the_mark(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    let at = chrono::Utc::now() + chrono::Duration::minutes(10);
+    link_and_mark(&db, &t, &j.id, "acme/api#1", at).await;
+
+    let mut tx = db.begin(t.org).await.unwrap();
+    tx.create_from_ticket(t.repo, Tracker::Github, "acme/api#2", "holder", None, None)
+        .await
+        .unwrap();
+    let err = tx
+        .link_ticket(&j.id, Tracker::Github, "acme/api#2")
+        .await
+        .unwrap_err();
+    tx.commit().await.unwrap();
+    assert!(
+        matches!(err, Error::TicketAlreadyLinked { .. }),
+        "expected TicketAlreadyLinked, got {err:?}"
+    );
+
+    let reread = read(&db, &t, &j.id).await;
+    assert_eq!(reread.ticket_ref.as_deref(), Some("acme/api#1"));
+    assert!(reread.ticket_stale);
+    assert_eq!(
+        reread.ticket_changed_at.map(|t| t.timestamp_micros()),
+        Some(at.timestamp_micros())
+    );
+}
+
 /// A webhook issue edit rewrites the description but not `described_at`: a
 /// comment noted before it is still not in the description, so the job stays
 /// stale until `update_job` says the issue was re-read.

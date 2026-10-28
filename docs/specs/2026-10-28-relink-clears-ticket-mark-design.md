@@ -162,3 +162,12 @@ through as `Changed { at }`; `note_ticket_changed_if_linked` stores `at`; `ticke
 - **Case-variant `ticket_ref`.** `acme/api#1` vs `Acme/API#1` counts as a different ticket and
   clears the mark. Consistent with the exact comparisons elsewhere; whether ticket refs should be
   normalised is a separate question.
+- **A renamed repository's relink.** `sync_ticket` tells an agent whose `ticket_ref` names a
+  renamed repository to relink it under the bound repository's name. That is the same issue under
+  another spelling, so the exact comparison clears the mark. Accepted: the `Job` doc comments and
+  the `link_ticket` description tell the caller to run `sync_ticket` afterwards, which re-reads the
+  issue (with `remote_revision` NULL, a foreign change since the job's text was written marks it
+  again). Recognising a rename needs knowledge of the rename, which the database does not have.
+- **A relink round-trip clears the mark without an audit event.** Relinking A → B → A drops A's
+  mark with nothing in the audit trail saying why. Accepted: `ticketStale` is advisory, and
+  `update_job` can already clear it.
