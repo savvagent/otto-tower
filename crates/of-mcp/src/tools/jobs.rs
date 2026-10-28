@@ -1080,7 +1080,8 @@ impl Factory {
                        that number in any repo, or \"owner/repo#928\"). An issue more than one \
                        job you can see carries is refused with ambiguous_ticket_ref, listing \
                        their ids; one no job carries is job_not_found. Tools that change a job \
-                       take its id or \"owner/repo#928\" and refuse a short \"#928\", because \
+                       (all but set_dependencies' own job argument) take its id or \
+                       \"owner/repo#928\" and refuse a short \"#928\", because \
                        it can match an issue in any repo: use this, or list_jobs(ticket=...), \
                        to find which job a short reference means."
     )]

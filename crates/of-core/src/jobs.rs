@@ -770,11 +770,14 @@ pub trait JobsExt {
     ) -> impl std::future::Future<Output = Result<Job>> + Send;
 
     /// [`Self::get_job_visible_held`] with the job's own row also locked
-    /// `FOR SHARE` until the transaction ends, so its ticket link (and
+    /// `FOR NO KEY UPDATE` until the transaction ends, so its ticket link (and
     /// `remote_revision`) cannot change under a write that depends on them:
     /// `link_ticket` relinking the job waits for this transaction rather than
     /// committing between the read and the write. The returned job is read
-    /// under the lock.
+    /// under the lock. Not `FOR SHARE`: two syncs of one job would both hold
+    /// it and then deadlock upgrading to the `UPDATE` each makes; this lock
+    /// queues them instead, and it still admits the `FOR KEY SHARE` the
+    /// `job_dependencies` foreign-key checks take.
     fn lock_job_visible(
         &mut self,
         id: &JobId,
@@ -1424,8 +1427,9 @@ impl JobsExt for Tx<'_> {
         tickets: &[TicketQuery],
         scope: &TeamScope,
     ) -> Result<Vec<BlockerOutcome>> {
-        // First, before any row lock, so every dependency writer queues on
-        // the same lock in the same order.
+        // Every dependency writer takes this before any lock that conflicts
+        // with another writer's: `sync_ticket` may already hold the job's row
+        // `FOR NO KEY UPDATE`, but nothing holding this lock waits on that.
         self.lock_dependency_graph().await?;
         // A write: the job's repo is held so its team cannot be reassigned
         // between this check and the inserts below. Whatever the caller read
@@ -2215,12 +2219,13 @@ impl JobsExt for Tx<'_> {
     }
 
     async fn lock_job_visible(&mut self, id: &JobId, scope: &TeamScope) -> Result<Job> {
-        let locked: Option<String> =
-            sqlx::query_scalar("SELECT id FROM jobs WHERE org_id = $1 AND id = $2 FOR SHARE")
-                .bind(self.org())
-                .bind(id)
-                .fetch_optional(self.conn())
-                .await?;
+        let locked: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM jobs WHERE org_id = $1 AND id = $2 FOR NO KEY UPDATE",
+        )
+        .bind(self.org())
+        .bind(id)
+        .fetch_optional(self.conn())
+        .await?;
         if locked.is_none() {
             return Err(Error::JobNotFound(id.clone()));
         }

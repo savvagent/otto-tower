@@ -282,7 +282,7 @@ than being quietly skipped. For a job with `tracker = github`:
    { body: Option<String>, updated_at: Option<String> }`, the same `GET /repos/{o}/{r}/issues/{n}`
    that `get_issue_updated_at` already makes. A fetch failure is `tracker_sync_failed`, classified
    as in "Retriability" below.
-4. In one transaction: lock the job's row (`JobsExt::lock_job_visible`, `FOR SHARE` plus the repo
+4. In one transaction: lock the job's row (`JobsExt::lock_job_visible`, `FOR NO KEY UPDATE`, so two syncs of one job queue rather than deadlock, plus the repo
    hold) and compare its `tracker`/`ticketRef` with the ones the issue was fetched for. The first
    read committed before the fetch, so `link_ticket` may have relinked the job in between; a
    relinked job is refused, retriable, rather than given another issue's blockers and drift time

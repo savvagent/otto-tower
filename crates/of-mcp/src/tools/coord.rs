@@ -70,7 +70,7 @@ pub struct AcquireLeaseArgs {
     pub agent: Option<String>,
     /// The job this lease is for, if there is one. A job id like "job-42", or
     /// the job's issue as "owner/repo#928" (a short "#928" is refused here, as
-    /// on every tool that changes a job: it can match an issue in any repo).
+    /// on the tools that change a job: it can match an issue in any repo).
     #[serde(default)]
     pub job: Option<String>,
     /// How long to hold it before it expires. Defaults to 15 minutes, capped
@@ -126,8 +126,8 @@ pub struct SendMessageArgs {
     #[serde(default)]
     pub team: Option<String>,
     /// The job this is about, if any. A job id like "job-42", or the job's
-    /// issue as "owner/repo#928" (a short "#928" is refused here, as on every
-    /// tool that changes a job: it can match an issue in any repo).
+    /// issue as "owner/repo#928" (a short "#928" is refused here, as on the
+    /// tools that change a job: it can match an issue in any repo).
     #[serde(default)]
     pub job: Option<String>,
     /// The id of the message you are replying to.
