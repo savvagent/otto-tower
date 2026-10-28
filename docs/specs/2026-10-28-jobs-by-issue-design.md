@@ -432,3 +432,9 @@ both down:
 - **`sync_ticket` pull can miss a change** that landed before otto-tower's own later write-back
   (that write-back's `remote_revision` covers it). The webhook path catches it for bound repos.
   Unbound jobs have no signal at all, which is already true.
+- **A late comment webhook can miss the mark.** The existing echo check (`is_stale_or_echoed`)
+  runs before `Changed`. So a comment whose event arrives after a newer revision was stored (an
+  issue edit, or otto-tower's own write-back) is dropped, and so is one in the same second
+  (`<=`). This is the weaker failure, a missed hint rather than a lost edit, and the next
+  `sync_ticket` pull still catches any change after the stored revision. A guard of its own for
+  `Changed` (comparing against `ticket_changed_at`) is a possible follow-up.
