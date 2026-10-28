@@ -191,6 +191,17 @@ pub struct Job {
     /// request" — only `cancel_requested_at == None` means that.
     pub cancel_requested_by: Option<UserId>,
     pub cancel_reason: Option<String>,
+    /// The newest change to the linked issue that otto-tower did not make
+    /// itself: a human comment on it, or a `sync_ticket` pull that found it
+    /// edited. `None` when no such change has been seen. On its own this says
+    /// nothing about whether the job is out of date; read `ticketStale`.
+    pub ticket_changed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// True when the linked issue has had a comment or change since this job's
+    /// title or description were last written. Re-read the issue before
+    /// relying on the description, and call `update_job` with a new title or
+    /// description to bring it up to date (which clears this). Always false
+    /// for a job with no linked issue.
+    pub ticket_stale: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -268,7 +279,10 @@ const JOB_COLS: &str = "id, org_id, repo_id, team_id, title, description, status
                         tracker, remote_revision, agent_type, metadata, created_at, started_at, \
                         completed_at, attempts, result, error, created_by, claimed_by, \
                         claimed_by_label, cancel_requested_at, cancel_requested_by, \
-                        cancel_reason, claim_expires_at";
+                        cancel_reason, claim_expires_at, ticket_changed_at, \
+                        (ticket_changed_at IS NOT NULL \
+                         AND ticket_changed_at > COALESCE(described_at, created_at)) \
+                         AS ticket_stale";
 
 /// Fingerprint the fields that define "the same `add_job` call" — see the
 /// `idempotency` module doc. Named-field destructure with no `..`: adding a
@@ -543,6 +557,18 @@ pub trait JobsExt {
         &mut self,
         id: &JobId,
         revision: &str,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
+
+    /// Record that the job's linked issue changed at `at`, by someone other
+    /// than otto-tower. Keeps the later of `at` and any time already recorded,
+    /// so an out-of-order webhook cannot move the mark backwards. Whether the
+    /// job then reads as `ticket_stale` is decided at read time against when
+    /// its title/description were last written: a change older than that (or
+    /// than the job itself) is one the description already reflects.
+    fn note_ticket_changed(
+        &mut self,
+        id: &JobId,
+        at: chrono::DateTime<chrono::Utc>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Edit a pending job. Every field is optional; `None` leaves it unchanged.
@@ -1134,7 +1160,9 @@ impl JobsExt for Tx<'_> {
         }
 
         let job = sqlx::query_as(&format!(
-            "UPDATE jobs SET title = $3, description = $4, \
+            // `described_at`: the description now *is* the issue body, so any
+            // change recorded before this rewrite is absorbed by it.
+            "UPDATE jobs SET title = $3, description = $4, described_at = now(), \
                     remote_revision = COALESCE($5, remote_revision) \
              WHERE org_id = $1 AND id = $2 RETURNING {JOB_COLS}"
         ))
@@ -1679,6 +1707,27 @@ impl JobsExt for Tx<'_> {
         Ok(())
     }
 
+    async fn note_ticket_changed(
+        &mut self,
+        id: &JobId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let updated = sqlx::query(
+            "UPDATE jobs SET ticket_changed_at = GREATEST(COALESCE(ticket_changed_at, $3), $3) \
+             WHERE org_id = $1 AND id = $2",
+        )
+        .bind(self.org())
+        .bind(id)
+        .bind(at)
+        .execute(self.conn())
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            return Err(Error::JobNotFound(id.clone()));
+        }
+        Ok(())
+    }
+
     async fn update_job(
         &mut self,
         id: &JobId,
@@ -1694,11 +1743,17 @@ impl JobsExt for Tx<'_> {
         }
 
         let org = self.org();
+        // A new title or description is the caller bringing the job up to date
+        // with its issue, so it moves `described_at` and clears `ticket_stale`.
+        // Routing and metadata say nothing about the issue's content and leave
+        // the mark where it was.
         let job = sqlx::query_as(&format!(
             "UPDATE jobs SET title = COALESCE($3, title), \
                     description = COALESCE($4, description), \
                     agent_type = COALESCE($5, agent_type), \
-                    metadata = COALESCE($6, metadata) \
+                    metadata = COALESCE($6, metadata), \
+                    described_at = CASE WHEN $3::text IS NULL AND $4::text IS NULL \
+                                        THEN described_at ELSE now() END \
              WHERE org_id = $1 AND id = $2 RETURNING {JOB_COLS}"
         ))
         .bind(org)

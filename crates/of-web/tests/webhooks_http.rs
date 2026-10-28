@@ -893,3 +893,165 @@ fn github_signature(body: &[u8]) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
+
+/// A GitHub `issue_comment` event on issue `number`, written by a bot when
+/// `bot`, on an issue carrying `labels`.
+fn github_comment(
+    installation: u64,
+    full_name: &str,
+    number: u64,
+    labels: &[&str],
+    bot: bool,
+    updated_at: &str,
+) -> Vec<u8> {
+    let user_type = if bot { "Bot" } else { "User" };
+    let labels = labels
+        .iter()
+        .map(|l| format!(r#"{{"name":"{l}"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        r#"{{
+  "action":"created",
+  "installation":{{"id":{installation}}},
+  "repository":{{"full_name":"{full_name}"}},
+  "issue":{{"id":{id},"number":{number},"title":"Issue {number}","body":"x","state":"open","updated_at":"{updated_at}","state_reason":null,"labels":[{labels}]}},
+  "comment":{{"id":9001,"body":"Also handle the empty case.","user":{{"login":"someone","type":"{user_type}"}}}}
+}}"#,
+        id = 7000 + number,
+    )
+    .into_bytes()
+}
+
+async fn post_github_comment(h: &Harness, body: &[u8]) -> http::Response<Body> {
+    post_webhook(
+        h,
+        "/webhooks/github",
+        body,
+        &[
+            ("x-github-event", "issue_comment"),
+            (
+                "x-hub-signature-256",
+                &format!("sha256={}", github_signature(body)),
+            ),
+        ],
+    )
+    .await
+}
+
+/// A moment after the job was created: the fixtures' fixed 2026-09 dates are
+/// older than any job a test creates, so they would never count as a change.
+fn after_now() -> String {
+    (chrono::Utc::now() + chrono::Duration::hours(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// A person commenting on a bound issue marks its live job stale, without
+/// rewriting the job, and stores the issue's revision so the redelivery of the
+/// same comment is dropped as an echo.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_human_comment_marks_the_issues_job_stale(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    let before = open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+    assert!(!before.ticket_stale);
+
+    let at = after_now();
+    let comment = github_comment(INSTALLATION, "acme/api", 17, &["trackers"], false, &at);
+    for _ in 0..2 {
+        assert_eq!(
+            post_github_comment(&h, &comment).await.status(),
+            StatusCode::OK
+        );
+    }
+
+    let after = job_for(&h, org, "acme/api", 17).await;
+    assert!(after.ticket_stale);
+    assert_eq!(
+        after
+            .ticket_changed_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        Some(at.clone())
+    );
+    assert_eq!(after.remote_revision.as_deref(), Some(at.as_str()));
+    assert_eq!(after.title, before.title);
+    assert_eq!(after.description, before.description);
+}
+
+/// A bot's comment (otto-tower's own write-back among them) is not a change
+/// to the work.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_bot_comment_does_not_mark_the_job_stale(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+
+    let comment = github_comment(
+        INSTALLATION,
+        "acme/api",
+        17,
+        &["trackers"],
+        true,
+        &after_now(),
+    );
+    assert_eq!(
+        post_github_comment(&h, &comment).await.status(),
+        StatusCode::OK
+    );
+
+    let job = job_for(&h, org, "acme/api", 17).await;
+    assert!(!job.ticket_stale);
+    assert_eq!(job.ticket_changed_at, None);
+}
+
+/// An issue without the binding's trigger label gets no webhook signal at all
+/// (spec §5, "What the marker cannot see"): `sync_ticket` is its only refresh.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_comment_on_an_issue_without_the_trigger_label_is_not_seen(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+
+    let comment = github_comment(INSTALLATION, "acme/api", 17, &["bug"], false, &after_now());
+    assert_eq!(
+        post_github_comment(&h, &comment).await.status(),
+        StatusCode::OK
+    );
+
+    let job = job_for(&h, org, "acme/api", 17).await;
+    assert!(!job.ticket_stale);
+    assert_eq!(job.ticket_changed_at, None);
+}
+
+/// A comment on an issue with no job yet puts nothing on the queue.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn a_comment_on_an_issue_with_no_job_creates_none(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+
+    let comment = github_comment(
+        INSTALLATION,
+        "acme/api",
+        18,
+        &["trackers"],
+        false,
+        &after_now(),
+    );
+    assert_eq!(
+        post_github_comment(&h, &comment).await.status(),
+        StatusCode::OK
+    );
+
+    let mut tx = h.db.begin(org).await.unwrap();
+    let repo = tx.get_repo_by_slug("api").await.unwrap().expect("repo");
+    let job = tx
+        .get_job_by_ticket_for_repo(repo.id, Tracker::Github, "acme/api#18")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(job.is_none());
+}

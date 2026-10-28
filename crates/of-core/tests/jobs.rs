@@ -1183,3 +1183,156 @@ async fn list_leases_carries_the_jobs_ticket_ref(pool: PgPool) {
     assert_eq!(shown, leases);
     tx.commit().await.unwrap();
 }
+
+/// A job in its own committed transaction, so a later transaction's `now()`
+/// is strictly after its `created_at`.
+async fn fresh(db: &otto_tenant::Db, t: &common::Tenant, title: &str) -> of_core::jobs::Job {
+    let mut tx = db.begin(t.org).await.unwrap();
+    let j = tx.add_job(job(t, title)).await.unwrap();
+    tx.commit().await.unwrap();
+    j
+}
+
+async fn note(
+    db: &otto_tenant::Db,
+    t: &common::Tenant,
+    id: &JobId,
+    at: chrono::DateTime<chrono::Utc>,
+) {
+    let mut tx = db.begin(t.org).await.unwrap();
+    tx.note_ticket_changed(id, at).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn read(db: &otto_tenant::Db, t: &common::Tenant, id: &JobId) -> of_core::jobs::Job {
+    let mut tx = db.begin(t.org).await.unwrap();
+    let j = tx.get_job(id).await.unwrap();
+    tx.commit().await.unwrap();
+    j
+}
+
+/// `now()` is the transaction's start, and two transactions can start in the
+/// same microsecond; a short pause makes "a later write" unambiguous.
+async fn tick() {
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+}
+
+#[sqlx::test]
+async fn a_new_job_is_not_ticket_stale(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    assert!(!j.ticket_stale);
+    assert_eq!(j.ticket_changed_at, None);
+    let j = read(&db, &t, &j.id).await;
+    assert!(!j.ticket_stale);
+    assert_eq!(j.ticket_changed_at, None);
+}
+
+#[sqlx::test]
+async fn a_change_after_creation_marks_the_job_stale(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    let at = chrono::Utc::now() + chrono::Duration::minutes(1);
+    note(&db, &t, &j.id, at).await;
+    let j = read(&db, &t, &j.id).await;
+    assert!(j.ticket_stale);
+    assert_eq!(
+        j.ticket_changed_at.map(|t| t.timestamp_micros()),
+        Some(at.timestamp_micros())
+    );
+}
+
+#[sqlx::test]
+async fn rewriting_the_description_or_title_clears_the_mark_and_metadata_does_not(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+
+    for field in ["description", "title"] {
+        let j = fresh(&db, &t, "work").await;
+        // Just after creation and well before the rewrite below: a change the
+        // rewrite has absorbed.
+        note(
+            &db,
+            &t,
+            &j.id,
+            j.created_at + chrono::Duration::milliseconds(1),
+        )
+        .await;
+        tick().await;
+
+        let mut tx = db.begin(t.org).await.unwrap();
+        let meta = serde_json::json!({"k": "v"});
+        let after_meta = tx
+            .update_job(&j.id, None, None, None, Some(&meta))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(after_meta.ticket_stale, "metadata alone must not clear it");
+
+        let mut tx = db.begin(t.org).await.unwrap();
+        let updated = match field {
+            "description" => tx.update_job(&j.id, None, Some("new body"), None, None),
+            _ => tx.update_job(&j.id, Some("new title"), None, None, None),
+        }
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert!(!updated.ticket_stale, "{field} rewrite must clear it");
+        assert!(!read(&db, &t, &j.id).await.ticket_stale, "{field}");
+        // The foreign change is still recorded; only its staleness is gone.
+        assert!(updated.ticket_changed_at.is_some());
+    }
+}
+
+#[sqlx::test]
+async fn a_change_older_than_the_job_does_not_mark_it(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    note(&db, &t, &j.id, j.created_at - chrono::Duration::minutes(5)).await;
+    let j = read(&db, &t, &j.id).await;
+    assert!(!j.ticket_stale);
+    assert!(j.ticket_changed_at.is_some());
+}
+
+#[sqlx::test]
+async fn note_ticket_changed_keeps_the_later_of_two_times(pool: PgPool) {
+    let db = db(pool);
+    let t = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let j = fresh(&db, &t, "work").await;
+    let later = chrono::Utc::now() + chrono::Duration::minutes(10);
+    let earlier = later - chrono::Duration::minutes(5);
+    note(&db, &t, &j.id, later).await;
+    note(&db, &t, &j.id, earlier).await;
+    let got = read(&db, &t, &j.id).await.ticket_changed_at.unwrap();
+    assert_eq!(got.timestamp_micros(), later.timestamp_micros());
+}
+
+/// Org B naming org A's job id marks nothing in A: whether B has a job with
+/// the same id (its own row is the one written) or none (`job_not_found`).
+#[sqlx::test]
+async fn note_ticket_changed_never_crosses_orgs(pool: PgPool) {
+    let db = db(pool);
+    let a = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let b = tenant(&db, "globex", "git@github.com:globex/api.git").await;
+    let theirs = fresh(&db, &a, "a's work").await;
+    let at = chrono::Utc::now() + chrono::Duration::minutes(1);
+
+    let mut tx = db.begin(b.org).await.unwrap();
+    let err = tx.note_ticket_changed(&theirs.id, at).await.unwrap_err();
+    assert_eq!(err.code(), "job_not_found", "{err}");
+    drop(tx);
+    let a_job = read(&db, &a, &theirs.id).await;
+    assert!(!a_job.ticket_stale);
+    assert_eq!(a_job.ticket_changed_at, None);
+
+    let mine = fresh(&db, &b, "b's work").await;
+    assert_eq!(mine.id, theirs.id, "both orgs number from job-1");
+    note(&db, &b, &mine.id, at).await;
+    assert!(read(&db, &b, &mine.id).await.ticket_stale);
+    let a_job = read(&db, &a, &theirs.id).await;
+    assert!(!a_job.ticket_stale);
+    assert_eq!(a_job.ticket_changed_at, None);
+}

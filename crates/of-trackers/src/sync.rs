@@ -3,7 +3,7 @@ use of_core::jobs::{Job, Status, Tracker};
 use of_core::trackers::{Provider, TrackerBinding};
 
 use crate::jira::Transition;
-use crate::webhook::WebhookEvent;
+use crate::webhook::{WebhookEvent, WebhookEventKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InboundDecision {
@@ -24,6 +24,15 @@ pub enum InboundDecision {
         result: Option<String>,
         error: Option<String>,
         remote_revision: Option<String>,
+    },
+    /// Someone commented on (or edited or deleted a comment on) the issue of a
+    /// live job: mark the job's description as possibly out of date
+    /// (`note_ticket_changed` at this revision) without rewriting it. GitHub
+    /// only. `remote_revision` is the issue's normalized `updated_at`, always
+    /// RFC 3339, and is stored as the job's revision so a redelivery is
+    /// dropped as an echo.
+    Changed {
+        remote_revision: String,
     },
     NoOp,
 }
@@ -89,6 +98,34 @@ pub fn inbound_decision(
                 remote_revision,
             }
         }
+        // After the close arm, so a comment event that also reports a close
+        // still closes. Replaces the `Update` a comment edit used to produce
+        // here: the comment event's issue snapshot carries the same body the
+        // job already has, so that rewrote nothing, while the comment itself
+        // is exactly what the description has not absorbed.
+        Some(_job)
+            if event.provider == Provider::Github
+                && event.kind == WebhookEventKind::IssueComment =>
+        {
+            // The bot filter is what keeps otto-tower's own write-back comment
+            // (a claim or completion note) from flagging its own job: that
+            // comment's webhook can arrive before the write-back has stored
+            // its `remote_revision`, so the echo check above cannot catch it.
+            // It also ignores other apps' bots, which is the intent: a CI
+            // status comment is not a change to what the work is.
+            let by_bot = event
+                .issue
+                .comment
+                .as_ref()
+                .is_some_and(|comment| comment.author_is_bot);
+            match remote_revision {
+                // Without the issue's own timestamp there is no time to record
+                // and no echo check was possible, so the comment is not counted
+                // rather than stamped with a guessed time.
+                Some(remote_revision) if !by_bot => InboundDecision::Changed { remote_revision },
+                _ => InboundDecision::NoOp,
+            }
+        }
         Some(_job) => {
             if event.provider == Provider::Github
                 && !matches!(
@@ -105,6 +142,14 @@ pub fn inbound_decision(
             }
         }
         None if close.is_some() => InboundDecision::NoOp,
+        // A comment never creates a job, whatever its action (a comment
+        // `edited` would otherwise pass the action check below): the issue's
+        // own `opened`/`labeled` events are what put an issue on the queue.
+        None if event.provider == Provider::Github
+            && event.kind == WebhookEventKind::IssueComment =>
+        {
+            InboundDecision::NoOp
+        }
         None => {
             if event.provider == Provider::Github
                 && !matches!(event.action.as_str(), "opened" | "edited" | "labeled")

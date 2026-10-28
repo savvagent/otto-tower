@@ -276,7 +276,12 @@ async fn apply(
                     "webhook verified for a connection with no matching repo binding"
                 );
             }
-            if event.kind == of_trackers::webhook::WebhookEventKind::Issue {
+            // GitHub comments are applied too, as the drift signal
+            // (`InboundDecision::Changed`). JIRA comment events stay ignored
+            // here, as they always have been.
+            let applies = event.kind == of_trackers::webhook::WebhookEventKind::Issue
+                || provider == Provider::Github;
+            if applies {
                 if let Some(binding) = binding.as_ref() {
                     if binding.connection_id.is_some() {
                         let tracker = match provider {
@@ -323,6 +328,29 @@ async fn apply(
                                     )
                                     .await
                                     .map_err(ApiError::from)?;
+                                }
+                            }
+                            InboundDecision::Changed { remote_revision } => {
+                                if let Some(existing) = existing.as_ref() {
+                                    // `inbound_decision` hands back only a
+                                    // revision it normalized from RFC 3339,
+                                    // so a failure here is a bug there.
+                                    let at = chrono::DateTime::parse_from_rfc3339(&remote_revision)
+                                        .map_err(|error| {
+                                            ApiError::internal(
+                                                "inbound comment revision was not RFC 3339",
+                                                error,
+                                            )
+                                        })?
+                                        .with_timezone(&chrono::Utc);
+                                    tx.note_ticket_changed(&existing.id, at)
+                                        .await
+                                        .map_err(ApiError::from)?;
+                                    // Stored so a redelivery of this comment
+                                    // is dropped as an echo.
+                                    tx.set_remote_revision(&existing.id, &remote_revision)
+                                        .await
+                                        .map_err(ApiError::from)?;
                                 }
                             }
                             InboundDecision::Close {

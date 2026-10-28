@@ -95,6 +95,10 @@ pub struct IssueSnapshot {
 pub struct CommentSnapshot {
     pub id: String,
     pub body: String,
+    /// GitHub's `comment.user.type == "Bot"`: an app wrote it, otto-tower's own
+    /// write-back comments included. False when GitHub sends no `user`, and
+    /// always false for JIRA, whose automation payload does not say.
+    pub author_is_bot: bool,
 }
 
 pub fn jira_site_id(query: Option<&str>) -> Result<String> {
@@ -238,6 +242,11 @@ fn parse_github(headers: &HeaderMap, raw_body: &[u8]) -> Result<ParsedWebhook> {
                     comment: Some(CommentSnapshot {
                         id: payload.comment.id.to_string(),
                         body: payload.comment.body,
+                        author_is_bot: payload
+                            .comment
+                            .user
+                            .and_then(|user| user.kind)
+                            .is_some_and(|kind| kind == "Bot"),
                     }),
                 },
             })))
@@ -277,6 +286,7 @@ fn parse_jira(raw_body: &[u8], site_id: String) -> Result<ParsedWebhook> {
             comment: payload.comment.map(|comment| CommentSnapshot {
                 id: comment.id,
                 body: comment.body,
+                author_is_bot: false,
             }),
         },
     })))
@@ -378,6 +388,14 @@ struct GithubIssue {
 struct GithubComment {
     id: i64,
     body: String,
+    #[serde(default)]
+    user: Option<GithubUser>,
+}
+
+#[derive(Deserialize)]
+struct GithubUser {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -541,6 +559,64 @@ mod tests {
                 .map(|comment| comment.id.as_str()),
             Some("9001")
         );
+    }
+
+    #[test]
+    fn github_issue_comment_reads_whether_the_author_is_a_bot() {
+        let parse = |body: &[u8]| {
+            let headers = github_headers("issue_comment", body);
+            let parsed = verify_and_parse(
+                Provider::Github,
+                &headers,
+                None,
+                body,
+                Verification::Github {
+                    secret: GITHUB_SECRET,
+                },
+            )
+            .expect("comment parses");
+            let ParsedWebhook::Event(event) = parsed else {
+                panic!("expected an event");
+            };
+            event.issue.comment.expect("comment present").author_is_bot
+        };
+        let with_user = |user: serde_json::Value| {
+            let mut v: serde_json::Value = serde_json::from_slice(GITHUB_COMMENT_FIXTURE).unwrap();
+            v["comment"]["user"] = user;
+            serde_json::to_vec(&v).unwrap()
+        };
+
+        // The fixture carries no `user` at all.
+        assert!(!parse(GITHUB_COMMENT_FIXTURE));
+        assert!(parse(&with_user(
+            serde_json::json!({"login": "otto-tower[bot]", "type": "Bot"})
+        )));
+        assert!(!parse(&with_user(
+            serde_json::json!({"login": "alice", "type": "User"})
+        )));
+        assert!(!parse(&with_user(serde_json::json!({"login": "alice"}))));
+        assert!(!parse(&with_user(serde_json::Value::Null)));
+    }
+
+    #[test]
+    fn jira_comments_are_never_marked_as_bot_authored() {
+        let cipher = cipher();
+        let encoded = encoded_secret(&cipher, JIRA_SECRET);
+        let parsed = verify_and_parse(
+            Provider::Jira,
+            &jira_headers(JIRA_SECRET),
+            Some("site=cloud-123"),
+            JIRA_FIXTURE,
+            Verification::Jira {
+                cipher: &cipher,
+                encoded_secret: &encoded,
+            },
+        )
+        .expect("valid secret");
+        let ParsedWebhook::Event(event) = parsed else {
+            panic!("expected an event");
+        };
+        assert!(!event.issue.comment.expect("comment present").author_is_bot);
     }
 
     #[test]
