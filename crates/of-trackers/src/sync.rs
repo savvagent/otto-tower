@@ -99,10 +99,13 @@ pub fn inbound_decision(
                 remote_revision,
             }
         }
-        // After the close arm, so a comment event that also reports a close
-        // still closes. A comment is what a job's description has not
-        // absorbed, so it marks the job rather than rewriting it: the comment
-        // event's issue snapshot carries the same body the job already has.
+        // A comment is what a job's description has not absorbed, so it marks
+        // the job rather than rewriting it: the comment event's issue snapshot
+        // carries the same body the job already has. A GitHub comment event
+        // never reports a close (its action is the comment's: created, edited,
+        // deleted), so the close arm above never takes one; the order only
+        // matters for JIRA comment events carrying a done status, which this
+        // arm does not match.
         Some(_job)
             if event.provider == Provider::Github
                 && event.kind == WebhookEventKind::IssueComment =>
@@ -332,25 +335,31 @@ pub const MAX_BLOCKED_BY: usize = 20;
 pub fn blocked_by(body: &str) -> Vec<String> {
     const PHRASE: &str = "blocked by";
     let mut found: Vec<String> = Vec::new();
-    // The character that opened the current fence, if inside one. A fence is
-    // closed only by the same character, as CommonMark has it, so a `~~~` line
-    // inside a backtick block does not end it.
-    let mut fence: Option<char> = None;
+    // The fence that opened the current code block, if inside one: its
+    // character and length. As CommonMark has it, a block is closed only by a
+    // line of the same character, at least as long, with nothing after it but
+    // whitespace. So a `~~~` line inside a backtick block, a three-backtick
+    // example inside a four-backtick block, and a fence line with an info
+    // string all leave the block open, and a "Blocked by" line shown inside it
+    // stays an example rather than becoming a dependency.
+    let mut fence: Option<(char, usize)> = None;
     for line in body.lines() {
         let trimmed = line.trim_start();
-        if let Some(marker) = ['`', '~']
-            .into_iter()
-            .find(|c| trimmed.starts_with(&c.to_string().repeat(3)))
-        {
-            fence = match fence {
-                None => Some(marker),
-                Some(open) if open == marker => None,
-                Some(open) => Some(open),
-            };
-            continue;
-        }
-        if fence.is_some() {
-            continue;
+        let run = |c: char| trimmed.chars().take_while(|&x| x == c).count();
+        let marker = ['`', '~'].into_iter().find(|&c| run(c) >= 3);
+        match (fence, marker) {
+            (None, Some(c)) => {
+                fence = Some((c, run(c)));
+                continue;
+            }
+            (Some((open, len)), Some(c))
+                if c == open && run(c) >= len && trimmed[run(c)..].trim().is_empty() =>
+            {
+                fence = None;
+                continue;
+            }
+            (Some(_), _) => continue,
+            (None, None) => {}
         }
         // ASCII lowercasing keeps byte offsets, so `start` indexes `line` too.
         let lower = line.to_ascii_lowercase();
@@ -507,6 +516,19 @@ mod tests {
         // A `~~~` line does not close a backtick fence.
         let body = "```\n~~~\nBlocked by #1\n```\nBlocked by #2";
         assert_eq!(blocked_by(body), vec!["#2"]);
+    }
+
+    #[test]
+    fn a_fence_closes_only_with_one_at_least_as_long_and_bare() {
+        // A three-backtick example inside a four-backtick block stays inside.
+        let body = "````\n```\nBlocked by #1\n```\n````\nBlocked by #2";
+        assert_eq!(blocked_by(body), vec!["#2"]);
+        // A longer closing fence closes; one with an info string does not.
+        let body = "```\nBlocked by #1\n```rust\nBlocked by #2\n`````\nBlocked by #3";
+        assert_eq!(blocked_by(body), vec!["#3"]);
+        // Trailing whitespace after a closing fence is fine.
+        let body = "~~~~\nBlocked by #1\n~~~~  \nBlocked by #4";
+        assert_eq!(blocked_by(body), vec!["#4"]);
     }
 
     #[test]

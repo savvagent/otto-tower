@@ -386,6 +386,7 @@ impl GithubAppClient {
     /// Send every call to `api_base` instead of `https://api.github.com`.
     /// It exists for tests pointing the client at a mock GitHub; production
     /// code never calls it, and no configuration sets it.
+    #[doc(hidden)]
     pub fn with_api_base(mut self, api_base: String) -> Self {
         self.api_base = api_base;
         self
