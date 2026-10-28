@@ -9,20 +9,20 @@
 //! that matched no binding, or was dropped, still commits its record: it was
 //! judged once and is not judged again.
 //!
-//! A delivery is a repeat if this org already recorded the same digest or the
-//! same delivery id. The digest (of the event name and the signed body) is
-//! what stops a replay: the signature binds the body, so a replay must send the
-//! same bytes. `X-GitHub-Delivery` is not signed, so it only catches GitHub's
-//! own redeliveries, which reuse it.
+//! A delivery is a repeat if this org already recorded the same digest of its
+//! signed body: the signature binds the body, so a replay must send the same
+//! bytes. The unsigned `X-GitHub-Delivery` is stored for diagnosis only and is
+//! never a key, so an unsigned value can never mark a genuine delivery as seen.
 
 use crate::error::Result;
 use crate::trackers::Provider;
 use otto_tenant::{Db, Tx};
 
 /// Record a verified delivery in `tx`. `false` if this org already recorded the
-/// same `digest` or the same `delivery_id` for `provider`.
+/// same `digest` for `provider`. `delivery_id` is stored alongside for
+/// diagnosis; it plays no part in deciding a repeat.
 ///
-/// Two concurrent deliveries of the same event serialize on the unique key: the
+/// Two concurrent deliveries of the same body serialize on the primary key: the
 /// second waits for the first's transaction, and is a repeat if it committed or
 /// a first delivery if it rolled back. Commit `tx` only after applying the
 /// delivery's effects in it.
@@ -33,12 +33,9 @@ pub async fn record(
     digest: &[u8; 32],
 ) -> Result<bool> {
     let org = tx.org();
-    // No conflict target: a clash on either the primary key (the digest) or the
-    // partial unique index (the delivery id) makes this a repeat. Every unique
-    // constraint on this table is a dedupe key; a new one would become one too.
     let inserted = sqlx::query(
         "INSERT INTO tracker_deliveries (org_id, provider, digest, delivery_id) \
-         VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+         VALUES ($1, $2, $3, $4) ON CONFLICT (org_id, provider, digest) DO NOTHING",
     )
     .bind(org)
     .bind(provider)

@@ -1280,11 +1280,13 @@ async fn forget_ticket_change(h: &Harness, org: OrgId, job: &of_core::jobs::Job)
     tx.commit().await.unwrap();
 }
 
-/// A delivery id already applied is acknowledged and does nothing, even when the
-/// body it carries differs. GitHub's own redelivery reuses both the id and the
-/// body; this pins the id key on its own.
+/// GitHub's own redelivery reuses both the id and the body: it is acknowledged
+/// and does nothing. The id is unsigned, so it is never a key on its own: a
+/// different body carrying a seen id is a new delivery and applies.
 #[sqlx::test(migrations = "../of-core/migrations")]
-async fn a_repeated_delivery_id_is_acknowledged_without_effect(pool: PgPool) {
+async fn a_repeated_delivery_is_acknowledged_without_effect_but_a_reused_id_is_not_a_key(
+    pool: PgPool,
+) {
     let h = harness(pool).await;
     let org = OrgId::new();
     bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
@@ -1303,26 +1305,26 @@ async fn a_repeated_delivery_id_is_acknowledged_without_effect(pool: PgPool) {
     assert!(job_for(&h, org, "acme/api", 17).await.ticket_stale);
 
     forget_ticket_change(&h, org, &job).await;
+    let reply = post_github_comment_as(&h, &first, "delivery-x").await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert_eq!(body_json(reply).await["ok"], serde_json::Value::Bool(true));
+    assert_eq!(
+        job_for(&h, org, "acme/api", 17).await.ticket_changed_at,
+        None,
+        "GitHub's redelivery applied again"
+    );
+
     let later = hours_from_now(2);
     let other = github_comment(INSTALLATION, "acme/api", 17, &["trackers"], false, &later);
     let reply = post_github_comment_as(&h, &other, "delivery-x").await;
-    assert_eq!(reply.status(), StatusCode::OK);
-    assert_eq!(body_json(reply).await["ok"], serde_json::Value::Bool(true));
-    let after = job_for(&h, org, "acme/api", 17).await;
-    assert_eq!(
-        after.ticket_changed_at, None,
-        "a repeated delivery id applied"
-    );
-
-    // Control: the same event under a delivery id not seen before applies.
-    let reply = post_github_comment_as(&h, &other, "delivery-y").await;
     assert_eq!(reply.status(), StatusCode::OK);
     assert_eq!(
         job_for(&h, org, "acme/api", 17)
             .await
             .ticket_changed_at
             .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-        Some(later)
+        Some(later),
+        "an unsigned delivery id suppressed a different signed body"
     );
 }
 
@@ -1373,14 +1375,18 @@ async fn a_replayed_body_under_a_new_delivery_id_is_acknowledged_without_effect(
 }
 
 /// `X-GitHub-Event` is not signed. A comment's signed body sent first under
-/// `issues` must not use up the genuine `issue_comment` delivery: the event
-/// name is part of the dedupe key, so the genuine one still marks the job.
+/// `issues` is rejected (its shape does not match the event) and recorded
+/// nowhere, so it cannot use up the genuine `issue_comment` delivery, which
+/// still marks the job.
 #[sqlx::test(migrations = "../of-core/migrations")]
-async fn a_body_sent_under_the_wrong_event_does_not_pre_empt_the_genuine_delivery(pool: PgPool) {
+async fn a_body_sent_under_the_wrong_event_is_rejected_and_does_not_pre_empt_the_genuine_delivery(
+    pool: PgPool,
+) {
     let h = harness(pool).await;
     let org = OrgId::new();
     bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
     open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+    let recorded = deliveries_recorded(&h, org).await;
 
     let comment = github_comment(
         INSTALLATION,
@@ -1391,8 +1397,9 @@ async fn a_body_sent_under_the_wrong_event_does_not_pre_empt_the_genuine_deliver
         &after_now(),
     );
     let mislabelled = post_github_issue(&h, &comment).await;
-    assert_eq!(mislabelled.status(), StatusCode::OK);
+    assert_eq!(mislabelled.status(), StatusCode::NOT_FOUND);
     assert!(!job_for(&h, org, "acme/api", 17).await.ticket_stale);
+    assert_eq!(deliveries_recorded(&h, org).await, recorded);
 
     let genuine = post_github_comment_as(&h, &comment, "delivery-1").await;
     assert_eq!(genuine.status(), StatusCode::OK);

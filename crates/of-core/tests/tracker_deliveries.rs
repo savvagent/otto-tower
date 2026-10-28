@@ -40,13 +40,14 @@ async fn the_same_body_is_a_repeat_whatever_delivery_id_it_carries(pool: PgPool)
     assert!(!record_one(&db, org, None, [1; 32]).await);
 }
 
+/// The delivery id is unsigned, so it is never a key: a seen id carrying a
+/// different body is a first delivery, and so is an absent id.
 #[sqlx::test]
-async fn a_seen_delivery_id_is_a_repeat_whatever_body_it_carries(pool: PgPool) {
+async fn a_seen_delivery_id_never_makes_a_different_body_a_repeat(pool: PgPool) {
     let db = db(pool);
     let org = OrgId::new();
     assert!(record_one(&db, org, Some("a"), [1; 32]).await);
-    assert!(!record_one(&db, org, Some("a"), [2; 32]).await);
-    // An absent id never clashes with another absent id.
+    assert!(record_one(&db, org, Some("a"), [2; 32]).await);
     assert!(record_one(&db, org, None, [3; 32]).await);
     assert!(record_one(&db, org, None, [4; 32]).await);
 }

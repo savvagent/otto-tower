@@ -1,8 +1,9 @@
 # GitHub webhook delivery dedupe design
 
 > **Status:** DRAFT — record every verified GitHub tracker-webhook event in a new tenant table,
-> keyed by its `X-GitHub-Delivery` id and by the SHA-256 of its event name and signed body, in the same
-> transaction as its effects, and acknowledge a repeat with `200` before `inbound_decision` runs.
+> keyed by the SHA-256 of its signed body, in the same transaction as its effects, and acknowledge a
+> repeat with `200` before `inbound_decision` runs. A body whose shape does not match its unsigned
+> `X-GitHub-Event` is rejected before it is recorded.
 > Swept after 30 days. Closes savvagent/otto-factory#265.
 >
 > **Follows:** `docs/specs/2026-10-28-late-comment-stale-mark-design.md` (PR #263), whose security
@@ -36,12 +37,14 @@ From savvagent/otto-factory#265, verbatim:
 A signed GitHub webhook event takes effect at most once per org within the retention window,
 whether it comes back as GitHub's own redelivery or as an attacker's replay of a captured request.
 
-- A second delivery with an already-recorded `X-GitHub-Delivery` id answers `200 {"ok":true}` and
-  changes nothing (no job created, rewritten, marked, or closed; no completion row).
-- A second delivery of a byte-identical signed body under the same `X-GitHub-Event` and a
-  **different** (or no) delivery id is treated the same way.
-- The same body sent under a different (unsigned) `X-GitHub-Event` is a different delivery, so it
-  cannot pre-empt the genuine one.
+- GitHub's redelivery (the same `X-GitHub-Delivery` id and the same body) answers `200
+  {"ok":true}` and changes nothing (no job created, rewritten, marked, or closed; no completion row).
+- A second delivery of a byte-identical signed body under a **different** (or no) delivery id is
+  treated the same way.
+- A different body under an already-seen delivery id is a new delivery and applies: the unsigned id
+  never decides a repeat.
+- A signed body sent under the wrong (unsigned) `X-GitHub-Event` is rejected with the uniform `404`
+  and recorded nowhere, so it cannot pre-empt the genuine delivery.
 - A delivery whose processing fails (a `5xx`) records nothing, so a manual redelivery (GitHub does
   not retry on its own) still applies it.
 - The same delivery id or body in another org is not a repeat (per-org keys), and a pinned
@@ -55,10 +58,15 @@ whether it comes back as GitHub's own redelivery or as an attacker's replay of a
    (`crates/of-trackers/src/webhook.rs`); every header, including the delivery id, is
    attacker-controlled on a replay. Deduplicating by delivery id alone stops GitHub's own
    redeliveries (which reuse the id) but not the replay the issue describes: the attacker sends the
-   captured body and signature with a fresh GUID. So the dedupe key is **also** the SHA-256 of the
-   raw body, which the signature does bind: a replay must send the identical bytes. Both keys are
-   unique per org; a delivery matching either is a repeat. This satisfies the acceptance criterion
-   as written (delivery id) and closes the hole it was written for (replay).
+   captured body and signature with a fresh GUID. And as a unique key it would let any request
+   holding some signed body mark a not-yet-used id as seen. So the dedupe key is the SHA-256 of the
+   raw body alone, which the signature does bind: a replay must send the identical bytes. GitHub's
+   redelivery resends the same body, so the acceptance criterion as written (a seen delivery is
+   acknowledged without effect) holds through the body key; the id is stored for diagnosis only.
+   `X-GitHub-Event` is unsigned too, and an `issue_comment` body carries everything an `issues`
+   payload needs, so the parser rejects an `issues` payload carrying a `comment` object (the reverse
+   already fails: `issue_comment` requires one). Each signed body then parses under one event only,
+   so the event name need not be part of the key.
 2. **Byte-identical bodies are the same event.** Every GitHub `issues` / `issue_comment` payload
    carries the issue's `updated_at` and, for comments, the comment id and author, so two distinct
    events with identical bytes do not occur in practice. Were they to, the second is the same input
@@ -72,7 +80,8 @@ whether it comes back as GitHub's own redelivery or as an attacker's replay of a
 - Migration `0010_tracker_deliveries.sql`: the table, its two-branch RLS policy, grants.
 - `of_core::tracker_deliveries`: `record` (insert-if-new in the caller's pinned `Tx`) and `sweep`
   (org-less retention delete).
-- `of_trackers::webhook::github_delivery_id`: read and validate the header.
+- `of_trackers::webhook::github_delivery`: the body digest, and the validated delivery-id header.
+- `of_trackers::webhook::parse_github`: reject an `issues` payload carrying a `comment` object.
 - `of-web`'s `/webhooks/{provider}` route: record a verified GitHub `Event` before `apply`, in each
   pass's transaction; acknowledge a repeat with `200`.
 - `of-server`'s `sweep_loop`: also sweep `tracker_deliveries`.
@@ -101,8 +110,6 @@ CREATE TABLE tracker_deliveries (
   received_at timestamptz      NOT NULL DEFAULT now(),
   PRIMARY KEY (org_id, provider, digest)
 );
-CREATE UNIQUE INDEX tracker_deliveries_delivery_idx
-  ON tracker_deliveries (org_id, provider, delivery_id) WHERE delivery_id IS NOT NULL;
 CREATE INDEX tracker_deliveries_received_idx ON tracker_deliveries (received_at);
 ```
 
@@ -126,15 +133,15 @@ loop in `CLAUDE.md` does not apply.
 
 ```rust
 /// Record a verified delivery in `tx`; `false` if this org already recorded
-/// the same digest or the same delivery id.
+/// the same digest. `delivery_id` is stored for diagnosis only.
 pub async fn record(tx: &mut Tx<'_>, provider: Provider, delivery_id: Option<&str>,
                     digest: &[u8; 32]) -> Result<bool>;
 /// Delete rows older than `keep_days`, for every org. Background only.
 pub async fn sweep(db: &Db, keep_days: i32) -> Result<u64>;
 ```
 
-`record` is `INSERT ... VALUES (tx.org(), ...) ON CONFLICT DO NOTHING` (no conflict target, so both
-the primary key and the partial unique index count) and returns `rows_affected() == 1`. The explicit
+`record` is `INSERT ... VALUES (tx.org(), ...) ON CONFLICT (org_id, provider, digest) DO NOTHING`
+and returns `rows_affected() == 1`. The explicit
 `org_id` is `tx.org()` (guard 1); the pinned policy is guard 2. Under concurrency the second insert
 of the same key waits for the first transaction: if it commits, the second sees the conflict and is
 a repeat; if it rolls back (a failed delivery), the second inserts and applies. Exactly once either
@@ -151,10 +158,12 @@ a GitHub delivery unique, so `of-web` only passes it on. `GithubDelivery { id, d
 - `id` is `X-GitHub-Delivery`: absent → `None` (the digest still dedupes); present → must be 1–128
   bytes of visible ASCII (GitHub sends a GUID), else an error the route answers with the same uniform
   `404` as any other rejected webhook.
-- `digest` is SHA-256 over the `X-GitHub-Event` value, a NUL byte, and the raw signed body. The event
-  header is not signed and decides how the body is parsed (an `issue_comment` body also parses as an
-  `issues` payload), so binding it in stops a body sent first under the wrong event from using up the
-  genuine delivery. A header value cannot contain NUL, so the encoding is unambiguous.
+- `id` is never a key; it is stored beside the digest for diagnosis.
+- `digest` is SHA-256 of the raw signed body alone. No unsigned header is part of it: a replay under
+  any other headers is the same delivery. The event header, which decides how the body is parsed,
+  is instead checked against the body's shape by `verify_and_parse` (an `issues` payload with a
+  `comment` object is rejected), so a body sent under the wrong event is refused before it is
+  recorded and cannot use up the genuine delivery.
 
 It is computed only after the signature verifies, so an unsigned request never reaches it.
 
@@ -185,23 +194,25 @@ match a recorded delivery again).
 
 ## §6 Testing
 
-- `of-core` (`tests/tracker_deliveries.rs`): `record` true then false for the same body; false for
+- `of-core` (`tests/tracker_deliveries.rs`): `record` true then false for the same body; true for
   a new body with a seen delivery id; true for the same body in another org (per-org); cross-org
   negative test — a pinned transaction as `otto_app` with deliberately unscoped SQL sees, deletes,
   and can forge none of another org's rows; `sweep` deletes only rows past the window, for two orgs,
   on a pool running as `otto_app` (the `housekeeping_deletes_where_row_level_security_applies`
   shape); `org_deleted` purges the org's rows.
 - `of-trackers`: `github_delivery_id` absent / valid / oversized / non-ASCII; `github_delivery`'s
-  digest differs by event name and by body.
+  digest is the body's SHA-256, unchanged by the event or delivery-id headers; a comment body under
+  `issues` and an issue body under `issue_comment` are both rejected.
 - `of-web` (`tests/webhooks_http.rs`). The existing guards (`remote_revision`, `ticket_changed_at`)
   would also drop most repeats, so each test first clears the job's `ticket_changed_at` with direct
   SQL (the state #264's relink can leave) so that only the dedupe can be what drops the repeat:
-  (a) a comment under delivery id X marks the job; after the reset, a *different* comment body under
-  the same X is `200` and leaves `ticket_changed_at` NULL; the same body under a new id Y then marks
-  it (control). (b) a comment marks the job; after the reset, the byte-identical body and signature
+  (a) a comment under delivery id X marks the job; after the reset, the same body under the same X
+  (GitHub's redelivery) is `200` and leaves `ticket_changed_at` NULL; a *different* body under the
+  same X then applies (the id is not a key). (b) a comment marks the job; after the reset, the byte-identical body and signature
   under a new delivery id is `200` and leaves it NULL; a different body under a new id then applies
-  (control). (c) a malformed delivery id is `404`. (d) a comment body sent first under `issues` does
-  not stop the genuine `issue_comment` delivery from marking the job. (e) a billed close (the
+  (control). (c) a malformed delivery id is `404`. (d) a comment body sent first under `issues` is
+  `404`, records nothing, and does not stop the genuine `issue_comment` delivery from marking the
+  job. (e) a billed close (the
   two-pass path) leaves its delivery recorded. Existing tests that post an identical body twice
   forget the delivery records before the repeat, so they still exercise the job's own guards.
 - `of-server`: `the_whole_router_assembles` unchanged; the sweeper change is covered by the of-core
@@ -225,7 +236,8 @@ match a recorded delivery again).
 
 - Retention 30 days, matching `PLATFORM_EVENT_RETENTION_DAYS`: long next to GitHub's 3-day manual
   redelivery window, and the cost is one small row per event.
-- Dedupe both keys (premise correction 1); the AC's delivery id alone would leave the replay open.
+- Dedupe on the body digest alone (premise correction 1); the AC's delivery id alone would leave the
+  replay open, and as a second key it would let an unsigned value suppress a signed body.
 - A malformed delivery header is rejected, not ignored: GitHub never sends one, and silently
   treating it as absent is the kind of fallback `CLAUDE.md` rules out.
 - Migration number `0010`; re-checked against `origin/master` before the PR opens.
@@ -242,11 +254,6 @@ match a recorded delivery again).
   are per org, so bodies recorded under the old org are unseen by the new one. Accepted: moving an
   installation is a rare admin action, and a cross-org unique key would let one tenant's rows decide
   another's writes. Recorded in the follow-up issue.
-- **The unsigned delivery id can mark an unused id as seen**: someone holding a signed body this org
-  has not recorded can send it under a guessed future GUID, so GitHub's later genuine delivery under
-  that id is dropped. Accepted: it needs both such a body and a GitHub delivery GUID before GitHub
-  issues it, and the id key is what the issue's acceptance criterion names. Recorded in the follow-up
-  issue.
 - **Two genuinely different events with byte-identical bodies** (for example label, unlabel and
   relabel within one second, since GitHub timestamps have one-second resolution) are one delivery:
   the second is dropped. Accepted as rare; a later change on the ticket corrects it.

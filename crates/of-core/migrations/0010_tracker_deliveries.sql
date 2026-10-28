@@ -9,15 +9,15 @@
 -- retry on its own) still applies. An event that matched no binding or was
 -- dropped still commits its row: it was judged, and is not judged again.
 --
--- Two keys, either of which makes a delivery a repeat:
---   * `digest`, SHA-256 over the `X-GitHub-Event` name, a NUL byte and the
---     signed body. A replay must send the same body bytes, because the
---     signature covers them; this is the key that stops a replay. The event
---     name is unsigned, and is bound in so that a body sent under the wrong
---     event cannot pre-empt the genuine delivery.
---   * `delivery_id`, GitHub's `X-GitHub-Delivery`. It is NOT signed, so on its
---     own it would stop only GitHub's own redeliveries (which reuse it), never
---     a replay sent under a fresh id. NULL when the header was absent.
+-- The key is `digest`, SHA-256 of the signed body. A replay must send the same
+-- body bytes, because the signature covers them, so this is what stops one.
+-- No unsigned header is part of the key: `X-GitHub-Event` is checked against
+-- the body's shape before anything is recorded (a mismatch is rejected), so a
+-- signed body is applied under one event only. `delivery_id`
+-- (`X-GitHub-Delivery`, NULL when absent) is kept for diagnosis and is NOT a
+-- key: it is unsigned, so as one it would let any request mark a genuine
+-- delivery's id as seen. GitHub's own redelivery resends the same body, which
+-- the digest already catches.
 --
 -- Rows are kept for a retention window and then swept by `of-server` with no
 -- org pinned, so the policy has the two branches `platform_events` has
@@ -34,10 +34,6 @@ CREATE TABLE tracker_deliveries (
   received_at timestamptz      NOT NULL DEFAULT now(),
   PRIMARY KEY (org_id, provider, digest)
 );
-
-CREATE UNIQUE INDEX tracker_deliveries_delivery_idx
-  ON tracker_deliveries (org_id, provider, delivery_id)
-  WHERE delivery_id IS NOT NULL;
 
 -- The sweep.
 CREATE INDEX tracker_deliveries_received_idx ON tracker_deliveries (received_at);

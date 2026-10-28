@@ -1,8 +1,9 @@
 # GitHub delivery dedupe — a signed GitHub webhook takes effect once per org
 
 Goal: record every verified GitHub tracker-webhook event in a new tenant table,
-`tracker_deliveries`, keyed per org by its `X-GitHub-Delivery` id and by the SHA-256 of its signed
-body, in the same transaction as its effects; acknowledge a repeat with `200` before `apply` (and so
+`tracker_deliveries`, keyed per org by the SHA-256 of its signed body (the `X-GitHub-Delivery` id is
+stored for diagnosis only), in the same transaction as its effects; reject a body whose shape does
+not match its `X-GitHub-Event`; acknowledge a repeat with `200` before `apply` (and so
 `inbound_decision`) runs; sweep rows after 30 days. Closes savvagent/otto-factory#265.
 
 **Spec:** `docs/specs/2026-10-28-github-delivery-dedupe-design.md` — read it first. This plan
