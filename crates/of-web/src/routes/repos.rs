@@ -21,7 +21,7 @@ use of_core::audit::action;
 use of_core::leases::Lease;
 use of_core::leases::LeasesExt;
 use of_core::repos::ReposExt;
-use of_core::repos::{NewRepo, Provider, Repo, RepoPatch};
+use of_core::repos::{Hold, NewRepo, Provider, Repo, RepoPatch};
 use of_core::scopes;
 use of_core::teams::{TeamScope, VerifiedTeam};
 use otto_tenant::audit::Entry;
@@ -195,6 +195,13 @@ pub async fn register_repo(
         None => None,
     };
 
+    // A remote some other repo already owns is refused naming that repo. For a
+    // caller limited to some teams that repo may be hidden, so the refusal is
+    // redacted the same way the MCP tools redact it. Owners and admins are always
+    // `TeamScope::All` (`TeamScope::for_member`), so behind `require_admin` this
+    // is a no-op; it is here so the `remote_taken` refusal does not rest on that
+    // gate, which decides who may register repos, not what they may see.
+    let scope = ctx.team_scope(&state.platform).await?;
     let mut tx = ctx.begin(&state.db).await?;
     let repo = tx
         .register_repo(NewRepo {
@@ -215,7 +222,8 @@ pub async fn register_repo(
             // From the session, never from the request.
             created_by: Some(ctx.user.id),
         })
-        .await?;
+        .await
+        .map_err(|e| scope.redact_foreign_ids(e))?;
 
     tx.audit(
         Entry::new(action::REPO_REGISTERED)
@@ -263,12 +271,24 @@ pub async fn update_repo(
         None => None,
     };
 
+    // The target is resolved through the caller's scope and held for update, as
+    // MCP's `update_repo` does: a repo of a team the caller is not on is `404`
+    // like one that does not exist (its slug kept out of the error's list), and
+    // an admin's team reassignment cannot commit between this check and the
+    // write. `add_remotes` can also hit a remote another repo owns; that refusal
+    // is redacted as in `register_repo`. Owners and admins are `TeamScope::All`,
+    // so behind `require_admin` neither changes anything today.
+    let scope = ctx.team_scope(&state.platform).await?;
     let mut tx = ctx.begin(&state.db).await?;
     let repo = tx
-        .resolve_repo(&of_core::repos::RepoRef {
-            slug: Some(slug),
-            remote: None,
-        })
+        .resolve_repo_visible_held(
+            &of_core::repos::RepoRef {
+                slug: Some(slug),
+                remote: None,
+            },
+            &scope,
+            Hold::ForUpdate,
+        )
         .await?;
 
     let repo = tx
@@ -285,7 +305,8 @@ pub async fn update_repo(
                 add_remotes: req.add_remotes,
             },
         )
-        .await?;
+        .await
+        .map_err(|e| scope.redact_foreign_ids(e))?;
 
     tx.audit(
         Entry::new(action::REPO_UPDATED)

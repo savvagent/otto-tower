@@ -287,6 +287,23 @@ mod tests {
         assert_eq!(api.retry_after, Some(1));
     }
 
+    /// A `remote_taken` withheld from a team-limited caller is still the
+    /// conflict it was, under the same code, so a client branching on either
+    /// takes the same branch whether or not the owning repo was named.
+    #[test]
+    fn a_redacted_remote_taken_is_still_a_conflict_with_its_code() {
+        let scope = of_core::teams::TeamScope::Teams(std::collections::HashSet::new());
+        let e = scope.redact_foreign_ids(CoreError::RemoteTaken(
+            "github.com/acme/secret".into(),
+            "secret-repo".into(),
+        ));
+        let api = ApiError::from(e);
+
+        assert_eq!(api.status, StatusCode::CONFLICT);
+        assert_eq!(api.code, "remote_taken");
+        assert!(!api.message.contains("secret-repo"), "{}", api.message);
+    }
+
     /// An issue reference naming no job is the same 404 as an unknown job id;
     /// one naming several is a conflict the caller resolves by picking an id.
     #[test]
