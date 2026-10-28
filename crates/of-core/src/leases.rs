@@ -118,6 +118,10 @@ pub trait LeasesExt {
     ///
     /// Filters expired rows in the query rather than relying on the reaper, so
     /// the answer is correct even when nothing has tried to acquire recently.
+    ///
+    /// Knows nothing about teams: each lease's `job_id` and `job_ticket_ref`
+    /// come back for every job. Anything shown to a caller goes through
+    /// [`hide_unseen_jobs`] first, or it names work of a team they are not on.
     fn list_leases(
         &mut self,
         repo_id: Option<RepoId>,
