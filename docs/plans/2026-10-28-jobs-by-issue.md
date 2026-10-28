@@ -78,6 +78,8 @@ green.
 - [ ] Run `cargo test -p of-core --lib ticket_ref`: it fails (no module yet).
 - [ ] Implement `ticket_ref.rs` with a module doc on why `#` separates the two namespaces (spec
       premise 5) and why the `LIKE` pattern is safe (validated digits only). Add `ticket_match_sql`.
+      `JobRef` and `TicketQuery` derive `Debug, Clone, PartialEq, Eq` (`JobFilter` derives `Debug,
+      Clone, Default` and holds an `Option<TicketQuery>`).
 - [ ] Add the two `Error` variants. Messages follow spec §1. `AmbiguousTicket` lists the ids and
       says "and more" when `more`. `code()` returns `job_not_found` / `ambiguous_ticket_ref`, and
       neither is retriable. Map them to `NOT_FOUND` / `CONFLICT` in `crates/of-web/src/error.rs`
@@ -100,8 +102,11 @@ green.
       a deliberately **unscoped** join `repo_leases l LEFT JOIN jobs j ON j.id = l.job_id` (no `org_id`
       predicate) returns only A's `ticket_ref`. Also assert the real `list_leases` gives A's.
 - [ ] Implement `Lease.job_ticket_ref` (`#[sqlx(default)]`, serialized `jobTicketRef`, doc
-      comment), the join in `list_leases` (`LEASE_COLS` qualified `l.`; join on `j.org_id = l.org_id
-      AND j.id = l.job_id`), and the blanking.
+      comment), the join in `list_leases`, and the blanking. **Do not prefix the shared `LEASE_COLS`
+      with `l.`**: it is also used in `RETURNING` and in an unaliased `SELECT` (`leases.rs:154`,
+      `:182`, `:210`), which would break at runtime only. Add a separate qualified list for
+      `list_leases` (e.g. `LEASE_COLS_L` plus `j.ticket_ref AS job_ticket_ref`), joined on
+      `j.org_id = l.org_id AND j.id = l.job_id`.
 - [ ] Run `cargo test -p of-core` and `cargo test -p of-web` (error mapping), then clippy. Both pass.
 - [ ] Format and commit: `cargo fmt --all` then
       `git commit -m "feat(of-core): resolve jobs by their issue reference"`.
@@ -119,16 +124,26 @@ green.
       `add_job(dependsOn=["#13"])`. `acquire_lease(job="#13")` stores the resolved id, and
       `list_leases` shows `jobTicketRef`. `list_jobs(ticket="#13")` gives only those jobs, and
       `list_jobs(ticket="job-1")` is `invalid_argument`. `send_message(job="#13")` resolves. A
-      malformed `get_job("#x")` is `invalid_argument`. Set `ticketRef` with `add_job` or `link_ticket`,
-      as the existing tests do.
+      malformed `get_job("#x")` is `invalid_argument`. An `add_job` replay with `dependsOn: ["#13"]`
+      the first time and `["job-N"]` (the same job) the second returns the original job, and so
+      does a `send_message` replay spelling `job` as `#13` and then as the id. Set `ticketRef` with
+      `add_job` or `link_ticket`, as the existing tests do.
 - [ ] Run `cargo test -p of-mcp --test tools`. The new tests fail.
 - [ ] Add `job_ref(tx, team, raw)` / `job_refs` in `tools/mod.rs` (thin `.mcp()` wrappers over
       Task 1), and replace every `JobId::from(args.job…)` / `ids(...)` on caller input in `jobs.rs`
-      and `coord.rs` with them, resolved inside the transaction **before** the existing
-      `ensure_job_visible`/`visible_job`. In `add_job` resolve `depends_on` before building
-      `NewJob` in both branches (replay then fingerprints resolved ids, per spec §1). In
-      `set_dependencies` resolve `job`, `add` and `remove`. `sync_ticket` resolves its `job` too.
-      Delete `fn ids` if it becomes unused.
+      and `coord.rs` with them, resolved inside the transaction and **before** the existing
+      `ensure_job_visible`/`visible_job`. Placement relative to metering (CLAUDE.md Metering rule 1:
+      `charge` is the first thing after `self.tx`):
+      - Paths that charge first (unkeyed `add_job` and `send_message`, and every single-job tool
+        including `set_dependencies` and `acquire_lease`, which today compute the id before the
+        transaction opens, `jobs.rs:1304`, `coord.rs:314`): resolve **after** `self.charge(...)`.
+      - Keyed `add_job` / `send_message`: resolve before `find_replayed_*`, where the existing
+        visibility checks already run ahead of the deferred charge.
+      - `complete_job`: resolve after `charge_completion`, as the id is handled today.
+      - `sync_ticket`: resolve in its existing read-only first transaction, which records nothing.
+      In `add_job` resolve `depends_on` before building `NewJob` in both branches (replay then
+      fingerprints resolved ids, per spec §1). In `set_dependencies` resolve `job`, `add` and
+      `remove`. Delete `fn ids` if it becomes unused.
 - [ ] Add `ListJobsArgs.ticket` and wire `JobFilter.ticket` (blank means absent; `JobRef::Id` →
       `Error::Invalid` with spec §2's message), parsed before the transaction opens, like `status`.
 - [ ] Update argument docs (`JobArgs.job`, `ClaimJobsArgs.jobs`, `SetDependenciesArgs.*`,
@@ -142,8 +157,10 @@ green.
 ## Task 3 — The drift marker, and the webhook signal ⬜
 
 **Files:** `0009_job_ticket_drift.sql` (create), `crates/of-core/src/jobs.rs`,
-`crates/of-trackers/src/{webhook,sync}.rs`, `crates/of-web/src/routes/webhooks.rs`,
-`crates/of-core/tests/jobs.rs`, `crates/of-web/tests/webhooks_http.rs`.
+`crates/of-trackers/src/{webhook,sync}.rs`, `crates/of-trackers/tests/sync.rs` (it builds a
+`Job { … }` literal at line 24 that must gain the new fields, and it holds the existing
+`inbound_decision` tests), `crates/of-web/src/routes/webhooks.rs`, `crates/of-core/tests/jobs.rs`,
+`crates/of-web/tests/webhooks_http.rs`.
 **Interfaces:** produces `Job.ticket_changed_at`, `Job.ticket_stale`, `JobsExt::note_ticket_changed`,
 `InboundDecision::Changed { remote_revision }` and `CommentSnapshot.author_is_bot`.
 
@@ -159,14 +176,17 @@ green.
       `described_at = now()` when title or description is passed. `update_from_ticket` sets it
       always. Check every `RETURNING {JOB_COLS}` / `SELECT {JOB_COLS}` still compiles and runs.
       The computed column is unqualified, like the rest.
-- [ ] Write failing unit tests in `of-trackers`. `parse_github` on `issue_comment` reads
+- [ ] Write failing tests in `of-trackers` (`parse_github` in `webhook.rs`'s unit tests,
+      `inbound_decision` in `tests/sync.rs`). `parse_github` on `issue_comment` reads
       `comment.user.type == "Bot"` into `author_is_bot`, and it is false when `user` is absent. A
       human comment on an existing non-terminal job gives `Changed`. A bot comment gives `NoOp`.
       An echoed comment (`updated_at <= remote_revision`) gives `Drop`. A comment on a terminal job
       gives `NoOp`. An `issues` `edited` event still gives `Update`. A JIRA comment event is
-      unchanged (`Update`).
+      unchanged (`Update`). An `issue_comment` on a **closed** issue whose job is still live keeps
+      taking the existing `Close` branch, because `close_status` is checked first and `Changed` is
+      evaluated only after it.
 - [ ] Implement `author_is_bot` and the `Changed` branch in `inbound_decision` (GitHub only; spec
-      §5 signal 1).
+      §5 signal 1), placed after the `Close` arm and before the `Update` arm.
 - [ ] Write a failing test in `webhooks_http.rs`: a signed human `issue_comment` webhook for a bound
       repo's existing job flips `ticketStale` (read back through `of-core`). A bot one does not, and
       neither does a human one on an issue missing the binding's trigger label (spec §5 limits).
@@ -198,28 +218,39 @@ green.
       (candidate ids, nothing written), and `cycle` (a candidate that depends on the job, and the
       job's own issue). After a `cycle`, a later `added` in the same call still lands and the
       transaction commits. **Cross-org negative:** an org B job carrying the referenced issue is
-      `no_job` for org A.
+      `no_job` for org A. **Team negative:** a candidate on a team-hidden repo is `no_job`, and a
+      job the scope cannot see is `job_not_found`.
 - [ ] Implement `add_ticket_dependencies` and `BlockerOutcome { ticket_ref, outcome, jobs }`
-      (`Serialize`, `JsonSchema`, camelCase, `outcome` a snake_case enum). The cycle check comes
-      before the insert, using the same recursive reach as `set_dependencies`, starting from the
-      candidate.
-- [ ] Add `GithubAppClient::get_issue` (and make `with_api_base` `pub` with a doc saying it is for
-      tests pointing at a mock). Add a unit test against the existing `TestServer`, as
+      (`Serialize`, `JsonSchema`, camelCase, `outcome` a snake_case enum). It is a write, so it
+      checks visibility **with the repo rows held** (CLAUDE.md, "a write checks visibility with the
+      repo row held"). The job itself goes through `get_job_visible_held` first, and a failure there
+      is that error. Each uniquely resolved candidate also goes through `get_job_visible_held`, and
+      a failure there is reported as `no_job`, never written. `sync_ticket`'s earlier read happened
+      in a transaction that has already committed, so it holds nothing. The cycle check comes before
+      the insert, using the same recursive reach as `set_dependencies`, starting from the candidate.
+- [ ] Add `GithubAppClient::get_issue` (and make `with_api_base` public: remove its
+      `#[cfg(test)]` attribute, add `pub`, and add a doc saying it exists for tests pointing at a mock). Add a unit test against the existing `TestServer`, as
       `get_issue_updated_at`'s test does.
 - [ ] Add `TrackerSyncConfig.github_api_base` (set to `None` in `of-mcp/src/lib.rs`, with a comment
       that no env var sets it) and apply it wherever `GithubAppClient::new` is called in `jobs.rs`.
 - [ ] Write failing tests in `tools.rs` against a mock GitHub (an axum server on a loopback port
       answering `POST /app/installations/{id}/access_tokens`, `GET /repos/acme/api/issues/{n}`,
-      `POST …/comments`, built with `Factory::new_with_tracker_sync` and the RSA test key that
-      `of-trackers`' tests use). A **pending** job linked to `acme/api#13` whose issue body says
+      `POST …/comments`, built with `Factory::new_with_tracker_sync`). The RSA key cannot be
+      imported (`TEST_KEY` is private to `of-trackers`' `#[cfg(test)]` module), so copy that PEM into
+      `crates/of-mcp/tests/tools.rs` as a test constant. `axum` is already a dev-dependency. A **pending** job linked to `acme/api#13` whose issue body says
       "Blocked by #14", with another job linked to `acme/api#14`, gets `sync_ticket` →
       `blockers[0].outcome == "added"`. The dependency shows through `set_dependencies`/`blocked`,
       and no comment was posted. "Blocked by #99" with no job gives `no_job`, and the job's
       dependencies are unchanged. An issue `updated_at` later than the job's creation, with no
       `remote_revision`, gives `ticketStale: true` in the result and in `ready`. A non-pending job
       still posts its comment (existing behaviour) and returns `blockers`. Update
-      `sync_ticket_refuses_a_still_pending_job`: a pending job with no binding still gets the
-      not-configured error. Rename the test to say what it now asserts.
+      `sync_ticket_refuses_a_still_pending_job`: a pending job with no binding now gets the
+      not-configured error (it reached the pending refusal first before). Rename the test to say
+      what it now asserts. A pending **JIRA** job with a binding keeps today's `invalid_argument`
+      refusal (spec §4: JIRA has no read path here), with a test.
+- [ ] Restructure `sync_ticket`: the pending refusal (`jobs.rs:1496`) moves **after** the binding
+      lookup (`jobs.rs:1536`) and applies only to a JIRA job. A pending GitHub job continues to the
+      read below.
 - [ ] Implement in `sync_ticket` per spec §4 steps 1–6: fetch with `get_issue` (failure →
       `tracker_sync_failed`, retriable), then one transaction with `note_ticket_changed` when
       `updated_at > remote_revision` (or none) and `add_ticket_dependencies` (short refs qualified

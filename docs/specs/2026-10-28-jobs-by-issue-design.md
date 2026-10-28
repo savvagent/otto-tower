@@ -237,7 +237,10 @@ first appearance, deduplicated:
    one with the job's own `owner/repo` (from its `ticketRef`). Then
    `JobsExt::add_ticket_dependencies(job, &[TicketQuery], scope) -> Vec<BlockerOutcome>`, which
    per reference:
-   - resolves with exactly §1's visible-matching rules, excluding the job itself;
+   - holds the job's repo while it checks the job is visible (`get_job_visible_held`), because this
+     is a write and `sync_ticket`'s first read has already committed;
+   - resolves with exactly §1's visible-matching rules, excluding the job itself, and re-checks a
+     unique candidate with `get_job_visible_held` (a failure is `no_job`);
    - `none` → outcome `no_job` (job left alone, as the AC asks);
    - 2+ → `ambiguous` with the visible ids;
    - already a dependency → `already`;
@@ -246,7 +249,10 @@ first appearance, deduplicated:
      so one bad line never aborts the transaction or the other lines;
    - otherwise insert → `added`.
 4. If the job is **pending**: commit and return, with no outbound write-back (there is still
-   nothing to post). This replaces today's `invalid_argument` refusal for pending jobs.
+   nothing to post). For a GitHub job this replaces today's `invalid_argument` refusal. The
+   refusal now runs after the binding lookup, so a pending job with no binding gets
+   `NotConfigured` first. A pending **JIRA** job keeps the `invalid_argument` refusal, because
+   there is no read path for JIRA here and nothing else to do.
 5. Otherwise: the existing write-back, unchanged.
 6. Record the call (`charge`) as today: in its own short `charge_tx`, opened after everything
    else has committed (`tools/jobs.rs:1600-1602`), on **every** success path, the new pending
