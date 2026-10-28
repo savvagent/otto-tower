@@ -47,7 +47,27 @@ fn job(status: Status, tracker: Tracker, ticket_ref: &str, remote_revision: Opti
         cancel_requested_at: None,
         cancel_requested_by: None,
         cancel_reason: None,
+        ticket_changed_at: None,
+        ticket_stale: false,
     }
+}
+
+/// A GitHub `issue_comment` event on issue 17, by a human unless `bot`.
+fn github_comment_event(
+    action: &str,
+    issue_state: &str,
+    updated_at: Option<&str>,
+    bot: bool,
+) -> of_trackers::webhook::WebhookEvent {
+    let mut event = github_issue_event(action, &["otto-factory"], updated_at, None);
+    event.kind = of_trackers::webhook::WebhookEventKind::IssueComment;
+    event.issue.state = issue_state.into();
+    event.issue.comment = Some(of_trackers::webhook::CommentSnapshot {
+        id: "9001".into(),
+        body: "Actually, also handle the empty case.".into(),
+        author_is_bot: bot,
+    });
+    event
 }
 
 fn github_issue_event(
@@ -448,4 +468,180 @@ fn outbound_cancelled_never_transitions_or_closes_a_tracker() {
         None,
     );
     assert!(github.github_close.is_none());
+}
+
+fn at(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
+    rfc3339.parse().expect("test timestamp")
+}
+
+/// A human comment is a change to the issue the job's description has not
+/// absorbed. Every comment action counts: an edit or a deletion changes what
+/// the thread says just as a new comment does.
+#[test]
+fn inbound_github_human_comment_on_a_live_job_is_changed() {
+    let binding = binding(Provider::Github, "otto-factory");
+    let existing = job(
+        Status::InProgress,
+        Tracker::Github,
+        "acme/api#17",
+        Some("2026-09-03T10:00:00Z"),
+    );
+    for action in ["created", "edited", "deleted"] {
+        let event = github_comment_event(action, "open", Some("2026-09-03T12:00:00-06:00"), false);
+        assert_eq!(
+            of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+            of_trackers::sync::InboundDecision::Changed {
+                at: at("2026-09-03T18:00:00Z"),
+            },
+            "{action}"
+        );
+    }
+}
+
+#[test]
+fn inbound_github_bot_comment_is_a_no_op() {
+    let binding = binding(Provider::Github, "otto-factory");
+    let existing = job(Status::Pending, Tracker::Github, "acme/api#17", None);
+    let event = github_comment_event("created", "open", Some("2026-09-03T12:00:00Z"), true);
+    assert_eq!(
+        of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+        of_trackers::sync::InboundDecision::NoOp
+    );
+}
+
+#[test]
+fn inbound_github_echoed_comment_is_dropped() {
+    let binding = binding(Provider::Github, "otto-factory");
+    let existing = job(
+        Status::Pending,
+        Tracker::Github,
+        "acme/api#17",
+        Some("2026-09-03T12:00:00Z"),
+    );
+    for updated_at in ["2026-09-03T12:00:00Z", "2026-09-03T11:00:00Z"] {
+        let event = github_comment_event("created", "open", Some(updated_at), false);
+        assert_eq!(
+            of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+            of_trackers::sync::InboundDecision::Drop,
+            "{updated_at}"
+        );
+    }
+}
+
+#[test]
+fn inbound_github_comment_on_a_terminal_job_is_a_no_op() {
+    let binding = binding(Provider::Github, "otto-factory");
+    let existing = job(Status::Completed, Tracker::Github, "acme/api#17", None);
+    let event = github_comment_event("created", "open", Some("2026-09-03T12:00:00Z"), false);
+    assert_eq!(
+        of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+        of_trackers::sync::InboundDecision::NoOp
+    );
+}
+
+/// With no timestamp of the issue's own there is no time to record and no
+/// echo check to run, so the comment is not counted rather than guessed at.
+#[test]
+fn inbound_github_comment_without_a_usable_revision_is_a_no_op() {
+    let binding = binding(Provider::Github, "otto-factory");
+    let existing = job(Status::Pending, Tracker::Github, "acme/api#17", None);
+    for updated_at in [None, Some("not-a-timestamp")] {
+        let event = github_comment_event("created", "open", updated_at, false);
+        assert_eq!(
+            of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+            of_trackers::sync::InboundDecision::NoOp,
+            "{updated_at:?}"
+        );
+    }
+}
+
+/// A comment never creates a job: only the issue's own events do.
+#[test]
+fn inbound_github_comment_without_a_job_creates_nothing() {
+    let binding = binding(Provider::Github, "otto-factory");
+    for action in ["created", "edited", "deleted"] {
+        let event = github_comment_event(action, "open", Some("2026-09-03T12:00:00Z"), false);
+        assert_eq!(
+            of_trackers::sync::inbound_decision(&event, &binding, None),
+            of_trackers::sync::InboundDecision::NoOp,
+            "{action}"
+        );
+    }
+}
+
+/// The issue's own `edited` event still rewrites the job from its body.
+#[test]
+fn inbound_github_issue_edit_still_updates() {
+    let binding = binding(Provider::Github, "otto-factory");
+    let existing = job(Status::Pending, Tracker::Github, "acme/api#17", None);
+    let event = github_issue_event(
+        "edited",
+        &["otto-factory"],
+        Some("2026-09-03T12:00:00Z"),
+        None,
+    );
+    assert!(matches!(
+        of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+        of_trackers::sync::InboundDecision::Update { .. }
+    ));
+}
+
+/// JIRA keeps its existing behaviour: a comment event carries the issue's
+/// fields and updates the job from them.
+#[test]
+fn inbound_jira_comment_still_updates() {
+    let binding = binding(Provider::Jira, "otto-factory");
+    let mut event = jira_issue_event(
+        "In Progress",
+        &["otto-factory"],
+        Some("2026-09-03T12:00:00Z"),
+    );
+    event.action = "comment_created".into();
+    event.kind = of_trackers::webhook::WebhookEventKind::IssueComment;
+    event.issue.comment = Some(of_trackers::webhook::CommentSnapshot {
+        id: "20002".into(),
+        body: "a comment".into(),
+        author_is_bot: false,
+    });
+    let existing = job(Status::InProgress, Tracker::Jira, "ENG-7", None);
+    assert!(matches!(
+        of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+        of_trackers::sync::InboundDecision::Update { .. }
+    ));
+}
+
+/// The close arm is evaluated before `Changed`: a comment event that also
+/// reports a close takes the close. On JIRA a comment event carries the
+/// issue's status, so a comment on a Done issue closes its live job.
+#[test]
+fn inbound_close_is_checked_before_changed() {
+    let binding = binding(Provider::Jira, "otto-factory");
+    let mut event = jira_issue_event("Done", &["otto-factory"], Some("2026-09-03T12:00:00Z"));
+    event.action = "comment_created".into();
+    event.kind = of_trackers::webhook::WebhookEventKind::IssueComment;
+    let existing = job(Status::InProgress, Tracker::Jira, "ENG-7", None);
+    assert!(matches!(
+        of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+        of_trackers::sync::InboundDecision::Close {
+            to: Status::Completed,
+            ..
+        }
+    ));
+}
+
+/// A GitHub close is the issue's own `closed` action, never its state, so a
+/// human comment on an already-closed issue whose job is still live is a
+/// change like any other (the close itself arrives, or arrived, as its own
+/// `issues` event).
+#[test]
+fn inbound_github_comment_on_a_closed_issue_is_changed_not_a_close() {
+    let binding = binding(Provider::Github, "otto-factory");
+    let existing = job(Status::InProgress, Tracker::Github, "acme/api#17", None);
+    let event = github_comment_event("created", "closed", Some("2026-09-03T12:00:00Z"), false);
+    assert_eq!(
+        of_trackers::sync::inbound_decision(&event, &binding, Some(&existing)),
+        of_trackers::sync::InboundDecision::Changed {
+            at: at("2026-09-03T12:00:00Z"),
+        }
+    );
 }

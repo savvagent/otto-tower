@@ -166,6 +166,7 @@ impl From<CoreError> for ApiError {
 
         let status = match &e {
             JobNotFound(_)
+            | NoJobForTicket(_)
             | RepoNotFound(_)
             | RepoUnresolved { .. }
             | TeamNotFound { .. }
@@ -177,6 +178,7 @@ impl From<CoreError> for ApiError {
             | LeaseNotHeld(_)
             | AlreadyClaimed { .. }
             | TicketAlreadyLinked { .. }
+            | AmbiguousTicket { .. }
             | IdempotencyKeyConflict { .. } => StatusCode::CONFLICT,
 
             WrongStatus { .. }
@@ -283,6 +285,23 @@ mod tests {
         assert_eq!(api.code, "race_lost");
         assert_eq!(api.message, "add_job lost a race");
         assert_eq!(api.retry_after, Some(1));
+    }
+
+    /// An issue reference naming no job is the same 404 as an unknown job id;
+    /// one naming several is a conflict the caller resolves by picking an id.
+    #[test]
+    fn ticket_references_map_to_not_found_and_conflict() {
+        let api = ApiError::from(CoreError::NoJobForTicket("#928".into()));
+        assert_eq!(api.status, StatusCode::NOT_FOUND);
+        assert_eq!(api.code, "job_not_found");
+
+        let api = ApiError::from(CoreError::AmbiguousTicket {
+            ticket: "#928".into(),
+            jobs: vec!["job-2".into(), "job-1".into()],
+            more: false,
+        });
+        assert_eq!(api.status, StatusCode::CONFLICT);
+        assert_eq!(api.code, "ambiguous_ticket_ref");
     }
 
     /// A team the platform does not know is a plain 404 (the repo was never

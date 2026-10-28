@@ -276,7 +276,17 @@ async fn apply(
                     "webhook verified for a connection with no matching repo binding"
                 );
             }
-            if event.kind == of_trackers::webhook::WebhookEventKind::Issue {
+            // Issue events from either tracker, plus GitHub comment events,
+            // which are the only comment kind applied: they carry the drift
+            // signal (`InboundDecision::Changed`). JIRA comment events stay
+            // skipped, as they always have been: their payload says nothing
+            // about who wrote the comment, so otto-tower's own write-back
+            // comments could not be told apart from a person's and every
+            // claim or completion note would flag its own job.
+            let applies = event.kind == of_trackers::webhook::WebhookEventKind::Issue
+                || (provider == Provider::Github
+                    && event.kind == of_trackers::webhook::WebhookEventKind::IssueComment);
+            if applies {
                 if let Some(binding) = binding.as_ref() {
                     if binding.connection_id.is_some() {
                         let tracker = match provider {
@@ -320,6 +330,34 @@ async fn apply(
                                         &title,
                                         description.as_deref(),
                                         remote_revision.as_deref(),
+                                    )
+                                    .await
+                                    .map_err(ApiError::from)?;
+                                }
+                            }
+                            InboundDecision::Changed { at } => {
+                                if let Some(existing) = existing.as_ref() {
+                                    // `remote_revision` is deliberately left
+                                    // where it was. Advancing it to the
+                                    // comment's time would make the echo check
+                                    // drop an earlier `issues` edit that GitHub
+                                    // delivers after the comment, losing that
+                                    // edit. A redelivered comment needs no echo
+                                    // guard: `note_ticket_changed` keeps the
+                                    // later time, so applying it twice is the
+                                    // same as once.
+                                    //
+                                    // `existing` was read unlocked, so the
+                                    // mark is conditional on the job still
+                                    // being linked to this issue: a job
+                                    // relinked (or deleted) in between has
+                                    // nothing of this issue's to mark, and
+                                    // that is not the sender's error to retry.
+                                    tx.note_ticket_changed_if_linked(
+                                        &existing.id,
+                                        tracker,
+                                        &ticket_ref,
+                                        at,
                                     )
                                     .await
                                     .map_err(ApiError::from)?;

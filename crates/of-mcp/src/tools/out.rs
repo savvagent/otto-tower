@@ -15,7 +15,7 @@
 //! already had, which is the same concern rather than a new one.
 
 use of_core::ids::JobId;
-use of_core::jobs::{Job, Stats};
+use of_core::jobs::{BlockerOutcome, Job, Stats};
 use of_core::leases::Lease;
 use of_core::messages::Message;
 use of_core::repos::Repo;
@@ -39,6 +39,21 @@ pub struct ReposOut {
 #[serde(rename_all = "camelCase")]
 pub struct JobOut {
     pub job: Job,
+}
+
+/// `sync_ticket`'s result: the job as it now stands, and what became of each
+/// "Blocked by" reference in its issue.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTicketOut {
+    pub job: Job,
+    /// One entry per issue named on a "Blocked by" line of the GitHub issue's
+    /// body, in order. Empty for a JIRA job, or an issue with no such line.
+    pub blockers: Vec<BlockerOutcome>,
+    /// Whether "Blocked by" lines were read into dependencies at all. False
+    /// for a JIRA job, and for a token without `jobs:write`; then an empty
+    /// `blockers` says nothing about what the issue's body contains.
+    pub blockers_imported: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

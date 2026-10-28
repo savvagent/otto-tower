@@ -641,6 +641,83 @@ async fn rls_scopes_an_unscoped_update(pool: PgPool) {
     assert_eq!(titles, vec!["globex work".to_string()]);
 }
 
+/// `list_leases` joins a lease to its job by id, and job ids are per org: both
+/// orgs here have a `job-1`. The real query pairs them on `org_id` too (guard
+/// 1); this issues the join *without* it, pinned to org A as `otto_app`, so
+/// only RLS on `jobs` (guard 2) keeps org B's `job-1` out of the pairing.
+#[sqlx::test]
+async fn rls_scopes_the_lease_job_join(pool: PgPool) {
+    let db = db(pool);
+    let a = tenant(&db, "acme", "git@github.com:acme/api.git").await;
+    let b = tenant(&db, "globex", "git@github.com:globex/api.git").await;
+
+    for (t, ticket) in [(&a, "acme/api#1"), (&b, "globex/api#2")] {
+        let mut tx = db.begin(t.org).await.unwrap();
+        let j = tx
+            .add_job(of_core::jobs::NewJob {
+                ticket_ref: Some(ticket.into()),
+                ..job(t, "work")
+            })
+            .await
+            .unwrap();
+        assert_eq!(j.id.as_str(), "job-1");
+        tx.commit().await.unwrap();
+    }
+    // Both orgs lease their own `job-1`, so a join that matched on the id
+    // alone would have a second lease and a second job to pair with.
+    for t in [&a, &b] {
+        let mut tx = db.begin(t.org).await.unwrap();
+        tx.acquire_lease(
+            t.repo,
+            "branch:main",
+            t.user,
+            None,
+            Some(&JobId::from("job-1")),
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    let mut tx = db.begin_unpinned().await.unwrap();
+    sqlx::query("SET LOCAL ROLE otto_app")
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    sqlx::query("SELECT set_config('app.org_id', $1, true)")
+        .bind(a.org.to_string())
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    // Deliberately unscoped: no org_id anywhere, not even in the join.
+    let paired: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT j.ticket_ref FROM repo_leases l LEFT JOIN jobs j ON j.id = l.job_id \
+         ORDER BY j.ticket_ref",
+    )
+    .fetch_all(tx.conn())
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        paired,
+        vec![Some("acme/api#1".to_string())],
+        "an unscoped lease-job join paired org A's lease with org B's job"
+    );
+
+    let mut tx = db.begin(a.org).await.unwrap();
+    let leases = tx.list_leases(None).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].job_ticket_ref.as_deref(), Some("acme/api#1"));
+
+    let mut tx = db.begin(b.org).await.unwrap();
+    let leases = tx.list_leases(None).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].job_ticket_ref.as_deref(), Some("globex/api#2"));
+}
+
 #[sqlx::test]
 async fn rls_scopes_tracker_connections(pool: PgPool) {
     let db = db(pool);

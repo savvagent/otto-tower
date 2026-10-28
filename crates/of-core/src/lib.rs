@@ -45,6 +45,7 @@ pub mod repo_slug;
 pub mod repos;
 pub mod scopes;
 pub mod teams;
+pub mod ticket_ref;
 pub mod trackers;
 pub mod watch;
 

@@ -23,6 +23,30 @@ pub enum Error {
     #[error("job {0} not found")]
     JobNotFound(JobId),
 
+    /// An issue reference (`#928`, `owner/repo#928`) that names no job the
+    /// caller can see. The same `job_not_found` code as [`Error::JobNotFound`],
+    /// so an agent already branching on it keeps working; hidden and other
+    /// orgs' jobs are indistinguishable from none.
+    #[error(
+        "no job you can see has a ticketRef matching {0:?}; list_jobs(ticket=…) shows what does"
+    )]
+    NoJobForTicket(String),
+
+    /// An issue reference that more than one visible job carries, most often
+    /// an issue whose first job failed and was queued again. `jobs` is newest
+    /// first and at most ten long; `more` says there were others.
+    #[error(
+        "{ticket:?} matches {}; pass one of those ids{}; list_jobs(ticket={ticket:?}) shows \
+         each one's status",
+        ambiguous_ids(.jobs, *.more),
+        full_form_hint(.ticket)
+    )]
+    AmbiguousTicket {
+        ticket: String,
+        jobs: Vec<JobId>,
+        more: bool,
+    },
+
     #[error("repo not found: {0}")]
     RepoNotFound(String),
 
@@ -193,7 +217,8 @@ impl Error {
     /// branch on this; humans read the message.
     pub fn code(&self) -> &'static str {
         match self {
-            Error::JobNotFound(_) => "job_not_found",
+            Error::JobNotFound(_) | Error::NoJobForTicket(_) => "job_not_found",
+            Error::AmbiguousTicket { .. } => "ambiguous_ticket_ref",
             Error::RepoNotFound(_) => "repo_not_found",
             Error::RepoUnresolved { .. } => "repo_unresolved",
             Error::RepoSlugTaken(_) => "repo_slug_taken",
@@ -249,6 +274,29 @@ impl Error {
     }
 }
 
+fn ambiguous_ids(jobs: &[JobId], more: bool) -> String {
+    let list = jobs
+        .iter()
+        .map(JobId::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if more {
+        format!("{list} and more")
+    } else {
+        list
+    }
+}
+
+/// The full form only disambiguates a short reference; a full one that is
+/// still ambiguous needs an id.
+fn full_form_hint(ticket: &str) -> String {
+    if ticket.starts_with('#') {
+        format!(", or the full owner/repo{ticket} form")
+    } else {
+        String::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +327,35 @@ mod tests {
         assert!(e.to_string().contains("or you are not on it"), "{e}");
         let plain = Error::TeamNotFound { team: "t".into() };
         assert!(!plain.to_string().contains("not on it"), "{plain}");
+    }
+
+    #[test]
+    fn ticket_errors_have_stable_codes_and_are_not_retriable() {
+        let none = Error::NoJobForTicket("#928".into());
+        assert_eq!(none.code(), "job_not_found");
+        assert!(!none.retriable());
+        assert!(none.to_string().contains("\"#928\""), "{none}");
+
+        let two = Error::AmbiguousTicket {
+            ticket: "#928".into(),
+            jobs: vec![JobId::from("job-61"), JobId::from("job-52")],
+            more: false,
+        };
+        assert_eq!(two.code(), "ambiguous_ticket_ref");
+        assert!(!two.retriable());
+        let msg = two.to_string();
+        assert!(msg.contains("job-61, job-52;"), "{msg}");
+        assert!(msg.contains("owner/repo#928"), "{msg}");
+        assert!(msg.contains("list_jobs(ticket=\"#928\")"), "{msg}");
+
+        let many = Error::AmbiguousTicket {
+            ticket: "acme/api#5".into(),
+            jobs: vec![JobId::from("job-2"), JobId::from("job-1")],
+            more: true,
+        };
+        let msg = many.to_string();
+        assert!(msg.contains("job-2, job-1 and more"), "{msg}");
+        assert!(!msg.contains("owner/repo"), "{msg}");
     }
 
     #[test]

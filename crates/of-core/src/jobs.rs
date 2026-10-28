@@ -12,6 +12,7 @@ use crate::error::{Error, Result};
 use crate::ids::{JobId, RepoId};
 use crate::repos::ReposExt;
 use crate::teams::{TeamScope, VerifiedTeam};
+use crate::ticket_ref::{short_ref_on_write, ticket_match_sql, JobRef, TicketQuery};
 use otto_tenant::ids::{OrgId, TeamId, UserId};
 use otto_tenant::Tx;
 use serde::{Deserialize, Serialize};
@@ -190,6 +191,60 @@ pub struct Job {
     /// request" — only `cancel_requested_at == None` means that.
     pub cancel_requested_by: Option<UserId>,
     pub cancel_reason: Option<String>,
+    /// When the linked issue last changed in a way otto-tower did not make
+    /// itself, as far as otto-tower has seen. Set by a comment on the linked
+    /// GitHub issue from someone other than a bot, arriving by webhook, or by
+    /// `sync_ticket` finding the issue changed since otto-tower last touched
+    /// it. An edit to the issue's own title or body arriving by webhook does
+    /// not set it (that rewrites this job's description instead). `None` when
+    /// no such change has been seen. On its own this says nothing about
+    /// whether the job is out of date; read `ticketStale`.
+    pub ticket_changed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// True when `ticketChangedAt` is later than this job's title or
+    /// description were last written (or than the job's creation): someone
+    /// has commented on or changed the issue since, and the description may
+    /// not reflect it. Re-read the issue before relying on the description.
+    /// Only `update_job` with a new title or description clears this; an
+    /// issue edit that rewrites the description by webhook does not, because
+    /// the comment that set it is still not in the description. Always false
+    /// for a job with no linked issue.
+    pub ticket_stale: bool,
+}
+
+/// What [`JobsExt::add_ticket_dependencies`] did with one issue reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockerKind {
+    /// The one job carrying the issue is now a dependency.
+    Added,
+    /// It already was one. Nothing changed.
+    Already,
+    /// No job you can see carries the issue. Nothing changed.
+    NoJob,
+    /// Several jobs you can see carry the issue (`jobs` lists them, newest
+    /// first). Nothing changed: add the right one with set_dependencies.
+    Ambiguous,
+    /// The job carrying the issue is this job itself or already waits on it,
+    /// so depending on it would deadlock both. Nothing changed.
+    Cycle,
+    /// The issue is in a different repository from this job's own issue.
+    /// Only blockers in the same repository are imported; nothing was looked
+    /// up and nothing changed. Add a cross-repo dependency with
+    /// set_dependencies if it is wanted.
+    OtherRepo,
+}
+
+/// One "Blocked by" reference and what came of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockerOutcome {
+    /// The issue reference as it was looked up, qualified and lowercased:
+    /// "owner/repo#N".
+    pub ticket_ref: String,
+    pub outcome: BlockerKind,
+    /// The job concerned for added, already and cycle; the candidates for
+    /// ambiguous (at most ten); empty for no_job and other_repo.
+    pub jobs: Vec<JobId>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -230,6 +285,9 @@ pub struct JobFilter {
     /// unrouted job is work anyone may take. Never validated against a list —
     /// same reasoning as `agent_type` itself.
     pub agent_type: Option<String>,
+    /// Only jobs whose `ticket_ref` matches this issue (see
+    /// [`crate::ticket_ref`]): what to list when a reference was ambiguous.
+    pub ticket: Option<TicketQuery>,
     pub limit: Option<i64>,
 }
 
@@ -264,7 +322,10 @@ const JOB_COLS: &str = "id, org_id, repo_id, team_id, title, description, status
                         tracker, remote_revision, agent_type, metadata, created_at, started_at, \
                         completed_at, attempts, result, error, created_by, claimed_by, \
                         claimed_by_label, cancel_requested_at, cancel_requested_by, \
-                        cancel_reason, claim_expires_at";
+                        cancel_reason, claim_expires_at, ticket_changed_at, \
+                        (ticket_changed_at IS NOT NULL \
+                         AND ticket_changed_at > COALESCE(described_at, created_at)) \
+                         AS ticket_stale";
 
 /// Fingerprint the fields that define "the same `add_job` call" — see the
 /// `idempotency` module doc. Named-field destructure with no `..`: adding a
@@ -402,6 +463,96 @@ pub trait JobsExt {
         f: &JobFilter,
     ) -> impl std::future::Future<Output = Result<Vec<Job>>> + Send;
 
+    /// Turn a job argument into a job id: a job id as itself, an issue
+    /// reference (`#928`, `owner/repo#928`) as the one job `scope` can see that
+    /// carries it.
+    ///
+    /// A job id costs no query and is returned even if no such job exists, so
+    /// the caller's own lookup raises exactly the error it always did. An issue
+    /// reference no visible job carries is [`Error::NoJobForTicket`]; one that
+    /// several carry is [`Error::AmbiguousTicket`], listing only ids `scope`
+    /// can see, so a hidden job neither makes a reference ambiguous nor leaks.
+    fn resolve_job_ref(
+        &mut self,
+        raw: &str,
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<JobId>> + Send;
+
+    /// [`Self::resolve_job_ref`] for each of `raw`, in order, stopping at the
+    /// first error.
+    fn resolve_job_refs(
+        &mut self,
+        raw: &[String],
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<Vec<JobId>>> + Send;
+
+    /// [`Self::resolve_job_ref`] for a tool that changes the job: a job id or a
+    /// full `owner/repo#N`, never a short `#N` ([`short_ref_on_write`]). `#N`
+    /// matches that number in every repo, so the one job it finds today is not
+    /// necessarily the one meant, and a write (a completion, which is billed,
+    /// or a delete) must not land on the wrong repo's job because the right
+    /// one has none yet.
+    fn resolve_job_ref_for_write(
+        &mut self,
+        raw: &str,
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<JobId>> + Send;
+
+    /// [`Self::resolve_job_ref_for_write`] for each of `raw`, in order,
+    /// stopping at the first error.
+    fn resolve_job_refs_for_write(
+        &mut self,
+        raw: &[String],
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<Vec<JobId>>> + Send;
+
+    /// Resolve dependency arguments, where a short `#N` means issue N of the
+    /// dependent job's own repository, `home` (`"owner/repo"`), as GitHub reads
+    /// `#N` in an issue body. With no `home` a short reference is refused, and
+    /// the refusal says why using `no_home` ("job-52 has no ticketRef of the
+    /// form owner/repo#N"). Job ids and full references resolve as in
+    /// [`Self::resolve_job_ref`].
+    fn resolve_dependency_refs(
+        &mut self,
+        raw: &[String],
+        home: Option<&str>,
+        no_home: &str,
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<Vec<JobId>>> + Send;
+
+    /// Make `id` depend on the job carrying each of `tickets`, where exactly
+    /// one job `scope` can see carries it, and say per ticket what happened
+    /// ([`BlockerKind`]). Only adds: a dependency is never removed here.
+    ///
+    /// `home` is the lowercased `owner/repo` of `id`'s own issue. A ticket in
+    /// any other repository is [`BlockerKind::OtherRepo`] and is not even
+    /// looked up: the issue body is written by whoever can edit the issue,
+    /// and letting it name any repo would let an outsider make this job wait
+    /// on any job in the org.
+    ///
+    /// Resolution is [`Self::resolve_job_ref`]'s, so a hidden job neither
+    /// resolves nor makes a ticket ambiguous. The job itself counts as a
+    /// candidate, so naming its own issue is reported as a `cycle` rather than
+    /// passed over. `id` failing [`Self::get_job_visible_held`] is that error,
+    /// for the whole call. A unique candidate failing it is `no_job`: it was
+    /// visible to the match a moment ago, and a reference to it is not written
+    /// on the strength of that.
+    ///
+    /// Unlike [`Self::set_dependencies`], the cycle check runs *before* each
+    /// insert, so a bad line is one outcome among several rather than an error
+    /// rolling back the lines around it. Under READ COMMITTED a cycle check
+    /// alone would not be proof against a concurrent dependency write (two
+    /// transactions could each see no path and each insert half of a loop),
+    /// so this and `set_dependencies` both take the org's dependency lock
+    /// first and run one at a time.
+    fn add_ticket_dependencies(
+        &mut self,
+        id: &JobId,
+        home: &str,
+        tickets: &[TicketQuery],
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<Vec<BlockerOutcome>>> + Send;
+
     /// Claim one or more pending jobs atomically.
     ///
     /// All or nothing: if any requested job is missing, already claimed, or
@@ -518,6 +669,32 @@ pub trait JobsExt {
         revision: &str,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
+    /// Record that the job's linked issue changed at `at`, by someone other
+    /// than otto-tower. Keeps the later of `at` and any time already recorded,
+    /// so an out-of-order webhook cannot move the mark backwards. Whether the
+    /// job then reads as `ticket_stale` is decided at read time against when
+    /// its title/description were last written: a change older than that (or
+    /// than the job itself) is one the description already reflects.
+    fn note_ticket_changed(
+        &mut self,
+        id: &JobId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
+
+    /// [`Self::note_ticket_changed`] for a caller that found the job from an
+    /// unlocked read of its ticket link, as the webhook route does: the mark
+    /// lands only if the job is still linked to `(tracker, ticket_ref)`, so a
+    /// `link_ticket` that relinked it in between does not get the old issue's
+    /// change pinned on the new one. `Ok(false)` means nothing matched (the
+    /// job was relinked or deleted), which is nothing to do, not an error.
+    fn note_ticket_changed_if_linked(
+        &mut self,
+        id: &JobId,
+        tracker: Tracker,
+        ticket_ref: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> impl std::future::Future<Output = Result<bool>> + Send;
+
     /// Edit a pending job. Every field is optional; `None` leaves it unchanged.
     fn update_job(
         &mut self,
@@ -601,6 +778,21 @@ pub trait JobsExt {
     /// own team and repo never change after it is created, so the repo is the
     /// only thing to hold.
     fn get_job_visible_held(
+        &mut self,
+        id: &JobId,
+        scope: &TeamScope,
+    ) -> impl std::future::Future<Output = Result<Job>> + Send;
+
+    /// [`Self::get_job_visible_held`] with the job's own row also locked
+    /// `FOR NO KEY UPDATE` until the transaction ends, so its ticket link (and
+    /// `remote_revision`) cannot change under a write that depends on them:
+    /// `link_ticket` relinking the job waits for this transaction rather than
+    /// committing between the read and the write. The returned job is read
+    /// under the lock. Not `FOR SHARE`: two syncs of one job would both hold
+    /// it and then deadlock upgrading to the `UPDATE` each makes; this lock
+    /// queues them instead, and it still admits the `FOR KEY SHARE` the
+    /// `job_dependencies` foreign-key checks take.
+    fn lock_job_visible(
         &mut self,
         id: &JobId,
         scope: &TeamScope,
@@ -1107,6 +1299,12 @@ impl JobsExt for Tx<'_> {
         }
 
         let job = sqlx::query_as(&format!(
+            // `described_at` is deliberately left alone. The body edit is
+            // absorbed into the description, but a comment noted before it
+            // is not, and clearing the mark here would hide an unread comment
+            // behind an edit as small as a label change. Only `update_job`
+            // with a title or description (a caller saying it has re-read the
+            // issue) clears it.
             "UPDATE jobs SET title = $3, description = $4, \
                     remote_revision = COALESCE($5, remote_revision) \
              WHERE org_id = $1 AND id = $2 RETURNING {JOB_COLS}"
@@ -1134,9 +1332,11 @@ impl JobsExt for Tx<'_> {
                AND ($5::uuid IS NULL OR created_by = $5) \
                AND ($6::text IS NULL OR agent_type = $6 OR agent_type IS NULL) \
                AND {} \
+               AND ($9::text IS NULL OR {}) \
              ORDER BY created_at DESC \
              LIMIT $7",
-            job_visible_sql(8)
+            job_visible_sql(8),
+            ticket_match_sql(9, 10)
         ))
         .bind(org)
         .bind(f.status)
@@ -1150,9 +1350,142 @@ impl JobsExt for Tx<'_> {
                 .as_ref()
                 .map(|v| v.iter().map(|t| t.as_uuid()).collect::<Vec<uuid::Uuid>>()),
         )
+        .bind(f.ticket.as_ref().map(TicketQuery::exact))
+        .bind(f.ticket.as_ref().and_then(TicketQuery::suffix_like))
         .fetch_all(self.conn())
         .await?;
         Ok(jobs)
+    }
+
+    async fn resolve_job_ref(&mut self, raw: &str, scope: &TeamScope) -> Result<JobId> {
+        let ticket = match JobRef::parse(raw)? {
+            JobRef::Id(id) => return Ok(id),
+            JobRef::Ticket(t) => t,
+        };
+        let mut found = self.visible_jobs_for_ticket(&ticket, scope).await?;
+        match found.len() {
+            0 => Err(Error::NoJobForTicket(ticket.exact())),
+            1 => Ok(found.remove(0)),
+            n => {
+                found.truncate(10);
+                Err(Error::AmbiguousTicket {
+                    ticket: ticket.exact(),
+                    jobs: found,
+                    more: n > 10,
+                })
+            }
+        }
+    }
+
+    async fn resolve_job_refs(&mut self, raw: &[String], scope: &TeamScope) -> Result<Vec<JobId>> {
+        let mut ids = Vec::with_capacity(raw.len());
+        for r in raw {
+            ids.push(self.resolve_job_ref(r, scope).await?);
+        }
+        Ok(ids)
+    }
+
+    async fn resolve_job_ref_for_write(&mut self, raw: &str, scope: &TeamScope) -> Result<JobId> {
+        if let JobRef::Ticket(t) = JobRef::parse(raw)? {
+            if t.is_short() {
+                return Err(short_ref_on_write(&t));
+            }
+        }
+        self.resolve_job_ref(raw, scope).await
+    }
+
+    async fn resolve_job_refs_for_write(
+        &mut self,
+        raw: &[String],
+        scope: &TeamScope,
+    ) -> Result<Vec<JobId>> {
+        let mut ids = Vec::with_capacity(raw.len());
+        for r in raw {
+            ids.push(self.resolve_job_ref_for_write(r, scope).await?);
+        }
+        Ok(ids)
+    }
+
+    async fn resolve_dependency_refs(
+        &mut self,
+        raw: &[String],
+        home: Option<&str>,
+        no_home: &str,
+        scope: &TeamScope,
+    ) -> Result<Vec<JobId>> {
+        let mut ids = Vec::with_capacity(raw.len());
+        for r in raw {
+            let ticket = match JobRef::parse(r)? {
+                JobRef::Ticket(t) if t.is_short() => t,
+                _ => {
+                    ids.push(self.resolve_job_ref(r, scope).await?);
+                    continue;
+                }
+            };
+            let short = ticket.exact();
+            let Some(qualified) = home.and_then(|h| ticket.within(h)) else {
+                return Err(Error::Invalid(format!(
+                    "{short:?} is read as an issue in the job's own repo, but {no_home}; name \
+                     the dependency by id or as owner/repo{short}"
+                )));
+            };
+            ids.push(self.resolve_job_ref(&qualified.exact(), scope).await?);
+        }
+        Ok(ids)
+    }
+
+    async fn add_ticket_dependencies(
+        &mut self,
+        id: &JobId,
+        home: &str,
+        tickets: &[TicketQuery],
+        scope: &TeamScope,
+    ) -> Result<Vec<BlockerOutcome>> {
+        // Every dependency writer takes this before any lock that conflicts
+        // with another writer's: `sync_ticket` may already hold the job's row
+        // `FOR NO KEY UPDATE`, but nothing holding this lock waits on that.
+        self.lock_dependency_graph().await?;
+        // A write: the job's repo is held so its team cannot be reassigned
+        // between this check and the inserts below. Whatever the caller read
+        // earlier was in a transaction that has already committed.
+        self.get_job_visible_held(id, scope).await?;
+        let org = self.org();
+        let mut outcomes = Vec::with_capacity(tickets.len());
+        for ticket in tickets {
+            if !ticket
+                .owner_repo()
+                .is_some_and(|or| or.eq_ignore_ascii_case(home))
+            {
+                outcomes.push(BlockerOutcome {
+                    ticket_ref: ticket.exact(),
+                    outcome: BlockerKind::OtherRepo,
+                    jobs: Vec::new(),
+                });
+                continue;
+            }
+            let mut found = self.visible_jobs_for_ticket(ticket, scope).await?;
+            let (outcome, jobs) = match found.len() {
+                0 => (BlockerKind::NoJob, Vec::new()),
+                1 => {
+                    let dep = found.remove(0);
+                    let kind = self.add_one_ticket_dependency(org, id, &dep, scope).await?;
+                    match kind {
+                        BlockerKind::NoJob => (kind, Vec::new()),
+                        _ => (kind, vec![dep]),
+                    }
+                }
+                _ => {
+                    found.truncate(10);
+                    (BlockerKind::Ambiguous, found)
+                }
+            };
+            outcomes.push(BlockerOutcome {
+                ticket_ref: ticket.exact(),
+                outcome,
+                jobs,
+            });
+        }
+        Ok(outcomes)
     }
 
     async fn claim_jobs(
@@ -1600,6 +1933,49 @@ impl JobsExt for Tx<'_> {
         Ok(())
     }
 
+    async fn note_ticket_changed(
+        &mut self,
+        id: &JobId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let updated = sqlx::query(
+            "UPDATE jobs SET ticket_changed_at = GREATEST(COALESCE(ticket_changed_at, $3), $3) \
+             WHERE org_id = $1 AND id = $2",
+        )
+        .bind(self.org())
+        .bind(id)
+        .bind(at)
+        .execute(self.conn())
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            return Err(Error::JobNotFound(id.clone()));
+        }
+        Ok(())
+    }
+
+    async fn note_ticket_changed_if_linked(
+        &mut self,
+        id: &JobId,
+        tracker: Tracker,
+        ticket_ref: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let updated = sqlx::query(
+            "UPDATE jobs SET ticket_changed_at = GREATEST(COALESCE(ticket_changed_at, $3), $3) \
+             WHERE org_id = $1 AND id = $2 AND tracker = $4 AND ticket_ref = $5",
+        )
+        .bind(self.org())
+        .bind(id)
+        .bind(at)
+        .bind(tracker)
+        .bind(ticket_ref)
+        .execute(self.conn())
+        .await?
+        .rows_affected();
+        Ok(updated > 0)
+    }
+
     async fn update_job(
         &mut self,
         id: &JobId,
@@ -1615,11 +1991,17 @@ impl JobsExt for Tx<'_> {
         }
 
         let org = self.org();
+        // A new title or description is the caller bringing the job up to date
+        // with its issue, so it moves `described_at` and clears `ticket_stale`.
+        // Routing and metadata say nothing about the issue's content and leave
+        // the mark where it was.
         let job = sqlx::query_as(&format!(
             "UPDATE jobs SET title = COALESCE($3, title), \
                     description = COALESCE($4, description), \
                     agent_type = COALESCE($5, agent_type), \
-                    metadata = COALESCE($6, metadata) \
+                    metadata = COALESCE($6, metadata), \
+                    described_at = CASE WHEN $3::text IS NULL AND $4::text IS NULL \
+                                        THEN described_at ELSE now() END \
              WHERE org_id = $1 AND id = $2 RETURNING {JOB_COLS}"
         ))
         .bind(org)
@@ -1647,6 +2029,10 @@ impl JobsExt for Tx<'_> {
             ));
         }
 
+        // One dependency writer per org at a time, so the cycle check below
+        // sees every edge committed before it, including one a concurrent
+        // call was about to add. See `lock_dependency_graph`.
+        self.lock_dependency_graph().await?;
         let org = self.org();
 
         for dep in add {
@@ -1868,6 +2254,20 @@ impl JobsExt for Tx<'_> {
         }
     }
 
+    async fn lock_job_visible(&mut self, id: &JobId, scope: &TeamScope) -> Result<Job> {
+        let locked: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM jobs WHERE org_id = $1 AND id = $2 FOR NO KEY UPDATE",
+        )
+        .bind(self.org())
+        .bind(id)
+        .fetch_optional(self.conn())
+        .await?;
+        if locked.is_none() {
+            return Err(Error::JobNotFound(id.clone()));
+        }
+        self.get_job_visible_held(id, scope).await
+    }
+
     async fn visible_job_ids(&mut self, ids: &[JobId], scope: &TeamScope) -> Result<Vec<JobId>> {
         let org = self.org();
         let wanted: Vec<String> = ids.iter().map(|i| i.0.clone()).collect();
@@ -1947,8 +2347,43 @@ impl JobsExt for Tx<'_> {
 }
 
 pub(crate) trait JobsInternal {
-    /// Allocate the next `job-N` sequence number from `org_counters`.
+    /// Allocate the next `job-N` sequence number for this org.
+    ///
+    /// The counter lives in this database's own `org_counters` table (it used to
+    /// be a column on the platform-side `orgs` row). The first call for an org
+    /// creates its row; every call takes the row lock, so two concurrent inserts
+    /// can never be handed the same number.
     async fn next_job_seq(&mut self) -> Result<i64>;
+
+    /// Take this org's dependency lock until the transaction ends. Every
+    /// write to `job_dependencies` that checks for a cycle takes it first.
+    /// Without it, under READ COMMITTED, two transactions adding A→B and B→A
+    /// could each run their cycle check before the other commits, each see no
+    /// path, and together commit a loop that deadlocks both jobs. With it the
+    /// second waits, then sees the first's edge and refuses. Per org, so one
+    /// org's dependency writes never wait on another's.
+    async fn lock_dependency_graph(&mut self) -> Result<()>;
+
+    /// The ids of jobs `scope` can see whose `ticket_ref` matches `ticket`,
+    /// newest first, at most eleven: up to ten to name, and one more only to
+    /// say "and more". The one statement behind [`JobsExt::resolve_job_ref`]
+    /// and [`JobsExt::add_ticket_dependencies`], so the two cannot disagree on
+    /// what a reference means.
+    async fn visible_jobs_for_ticket(
+        &mut self,
+        ticket: &TicketQuery,
+        scope: &TeamScope,
+    ) -> Result<Vec<JobId>>;
+
+    /// One step of [`JobsExt::add_ticket_dependencies`]: `id` depending on its
+    /// one candidate `dep`. Writes only for [`BlockerKind::Added`].
+    async fn add_one_ticket_dependency(
+        &mut self,
+        org: OrgId,
+        id: &JobId,
+        dep: &JobId,
+        scope: &TeamScope,
+    ) -> Result<BlockerKind>;
 
     /// Look up the *live* job holding a ticket ref, scoped to one repo and
     /// tracker. Unlike `get_job_by_ticket_for_repo`'s newest-wins semantics —
@@ -2122,12 +2557,109 @@ impl JobsInternal for Tx<'_> {
         Ok(())
     }
 
+    /// The ids of the jobs `scope` may see whose ticket matches `ticket`,
+    /// newest first. At most eleven, so a caller can tell "ten" from "more
+    /// than ten" without reading every match.
+    async fn visible_jobs_for_ticket(
+        &mut self,
+        ticket: &TicketQuery,
+        scope: &TeamScope,
+    ) -> Result<Vec<JobId>> {
+        let teams = scope
+            .restriction()
+            .map(|v| v.iter().map(|t| t.as_uuid()).collect::<Vec<uuid::Uuid>>());
+        // Newest first, with `job-N`'s number breaking a tie between jobs made
+        // in one transaction (which share `created_at`).
+        let found: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT j.id FROM jobs j \
+             WHERE j.org_id = $1 AND {} AND {} \
+             ORDER BY j.created_at DESC, length(j.id) DESC, j.id DESC \
+             LIMIT 11",
+            ticket_match_sql(2, 3),
+            job_visible_sql(4)
+        ))
+        .bind(self.org())
+        .bind(ticket.exact())
+        .bind(ticket.suffix_like())
+        .bind(teams)
+        .fetch_all(self.conn())
+        .await?;
+        Ok(found.into_iter().map(JobId).collect())
+    }
+
+    async fn add_one_ticket_dependency(
+        &mut self,
+        org: OrgId,
+        id: &JobId,
+        dep: &JobId,
+        scope: &TeamScope,
+    ) -> Result<BlockerKind> {
+        if dep == id {
+            return Ok(BlockerKind::Cycle);
+        }
+        match self.get_job_visible_held(dep, scope).await {
+            Ok(_) => {}
+            Err(Error::JobNotFound(_)) => return Ok(BlockerKind::NoJob),
+            Err(e) => return Err(e),
+        }
+        let already: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM job_dependencies \
+                            WHERE org_id = $1 AND job_id = $2 AND depends_on = $3)",
+        )
+        .bind(org)
+        .bind(id)
+        .bind(dep)
+        .fetch_one(self.conn())
+        .await?;
+        if already {
+            return Ok(BlockerKind::Already);
+        }
+        // Would `id` -> `dep` close a loop? Only if `id` is already reachable
+        // from `dep`: `set_dependencies`' reach, started from the candidate.
+        let closes: bool = sqlx::query_scalar(
+            "WITH RECURSIVE reach(job_id) AS ( \
+                 SELECT depends_on FROM job_dependencies WHERE org_id = $1 AND job_id = $2 \
+                 UNION \
+                 SELECT d.depends_on FROM job_dependencies d \
+                   JOIN reach r ON r.job_id = d.job_id WHERE d.org_id = $1 \
+             ) SELECT EXISTS (SELECT 1 FROM reach WHERE job_id = $3)",
+        )
+        .bind(org)
+        .bind(dep)
+        .bind(id)
+        .fetch_one(self.conn())
+        .await?;
+        if closes {
+            return Ok(BlockerKind::Cycle);
+        }
+        sqlx::query(
+            "INSERT INTO job_dependencies (org_id, job_id, depends_on) VALUES ($1,$2,$3) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(org)
+        .bind(id)
+        .bind(dep)
+        .execute(self.conn())
+        .await?;
+        Ok(BlockerKind::Added)
+    }
+
     /// Allocate the next `job-N` sequence number for this org.
     ///
     /// The counter lives in this database's own `org_counters` table (it used to
     /// be a column on the platform-side `orgs` row). The first call for an org
     /// creates its row; every call takes the row lock, so two concurrent inserts
     /// can never be handed the same number.
+    async fn lock_dependency_graph(&mut self) -> Result<()> {
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('job_dependencies:' || $1::text, 0))",
+        )
+        .bind(self.org())
+        .execute(self.conn())
+        .await?;
+        Ok(())
+    }
+
     async fn next_job_seq(&mut self) -> Result<i64> {
         let seq: i64 = sqlx::query_scalar(
             "INSERT INTO org_counters (org_id, next_job_seq) VALUES ($1, 2) \

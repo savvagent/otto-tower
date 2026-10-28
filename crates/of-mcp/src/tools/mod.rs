@@ -210,6 +210,62 @@ pub(crate) async fn maybe_repo_of(
     Ok(Some(repo_of(tx, team, slug, remote).await?.id))
 }
 
+/// Turn a job argument into a job id: `"job-42"` as itself, `"#928"` or
+/// `"owner/repo#928"` as the one job `team` can see that carries that issue.
+///
+/// Call it inside the transaction and ahead of the tool's own visibility check
+/// (`visible_job`, `ensure_job_visible`). A job id costs no query, so that check
+/// still raises exactly the error it always did for one; only an issue
+/// reference can fail here (malformed, unmatched, or ambiguous).
+pub(crate) async fn job_ref(
+    tx: &mut Tx<'_>,
+    team: &TeamScope,
+    raw: &str,
+) -> Result<JobId, ErrorData> {
+    tx.resolve_job_ref(raw, team).await.mcp()
+}
+
+/// [`job_ref`] for a tool that changes the job it names: a job id or a full
+/// `owner/repo#N`, and a short `#N` refused with `invalid_argument`. `#N`
+/// matches that number in every repo, so the job it finds today may be another
+/// repo's, and a write (a billed completion, a delete) must not land there
+/// just because the job meant has no issue link yet. Reads keep the short form
+/// ([`job_ref`]), where a wrong guess costs nothing and an ambiguous one says so.
+pub(crate) async fn job_ref_for_write(
+    tx: &mut Tx<'_>,
+    team: &TeamScope,
+    raw: &str,
+) -> Result<JobId, ErrorData> {
+    tx.resolve_job_ref_for_write(raw, team).await.mcp()
+}
+
+/// [`job_ref_for_write`] for each of `raw`, in order, stopping at the first
+/// refusal.
+pub(crate) async fn job_refs_for_write(
+    tx: &mut Tx<'_>,
+    team: &TeamScope,
+    raw: &[String],
+) -> Result<Vec<JobId>, ErrorData> {
+    tx.resolve_job_refs_for_write(raw, team).await.mcp()
+}
+
+/// Dependency arguments (`set_dependencies`' `add`/`remove`, `add_job`'s
+/// `dependsOn`), where a short `#N` is issue N of the dependent job's own
+/// GitHub repository, `home` ("owner/repo"), the way GitHub itself reads `#N`
+/// in that repository's issues. With no `home` a short reference is refused,
+/// with `no_home` saying why. See `JobsExt::resolve_dependency_refs`.
+pub(crate) async fn dependency_refs(
+    tx: &mut Tx<'_>,
+    team: &TeamScope,
+    raw: &[String],
+    home: Option<&str>,
+    no_home: &str,
+) -> Result<Vec<JobId>, ErrorData> {
+    tx.resolve_dependency_refs(raw, home, no_home, team)
+        .await
+        .mcp()
+}
+
 /// Fetch a job the caller may see. A job of a team the caller is not on is
 /// `job_not_found`, the same as one that does not exist.
 pub(crate) async fn visible_job(

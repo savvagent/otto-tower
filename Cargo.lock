@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "of-billing"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "chrono",
  "of-core",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "of-core"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "base64",
  "chrono",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "of-mcp"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "axum",
  "chrono",
@@ -1317,7 +1317,7 @@ dependencies = [
 
 [[package]]
 name = "of-server"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "of-testkit"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "axum",
  "base64",
@@ -1363,7 +1363,7 @@ dependencies = [
 
 [[package]]
 name = "of-trackers"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "base64",
  "chrono",
@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "of-web"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-trait",
