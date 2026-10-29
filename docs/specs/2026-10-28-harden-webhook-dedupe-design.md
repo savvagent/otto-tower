@@ -216,7 +216,7 @@ signature over the body. Whoever holds the secret can send any body, so:
 What would actually close it is moving JIRA to a transport that signs the body (Jira Cloud's
 admin-registered webhooks can carry an HMAC signature over the body), which would let the GitHub
 digest dedupe apply unchanged. That is a provider-setup change with its own console and docs work, so it is not
-done here. It is filed as its own issue before this PR opens (plan Task 4), and the PR names it.
+done here. It is filed as savvagent/otto-factory#275.
 
 ## Assumptions
 
@@ -251,4 +251,4 @@ done here. It is filed as its own issue before this PR opens (plan Task 4), and 
   delivery log until the lists catch up; the rejection's `warn` line names the action.
 - **A previously-applied comment action that is not in the list** would now be ignored. All three
   documented comment actions are in it, so none is lost.
-- **JIRA signed webhooks** are deferred to a follow-up issue (§4).
+- **JIRA signed webhooks** are deferred to savvagent/otto-factory#275 (§4).
