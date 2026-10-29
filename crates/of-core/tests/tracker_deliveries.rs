@@ -10,13 +10,13 @@
 mod common;
 
 use common::db;
-use of_core::tracker_deliveries::{record, sweep};
+use of_core::tracker_deliveries::{record, sweep, Recorded};
 use of_core::trackers::Provider;
 use otto_tenant::ids::OrgId;
 use otto_tenant::Db;
 use sqlx::PgPool;
 
-async fn record_one(db: &Db, org: OrgId, id: Option<&str>, digest: [u8; 32]) -> bool {
+async fn record_one(db: &Db, org: OrgId, id: Option<&str>, digest: [u8; 32]) -> Recorded {
     let mut tx = db.begin(org).await.unwrap();
     let first = record(&mut tx, Provider::Github, id, &digest)
         .await
@@ -36,10 +36,22 @@ async fn count_all(pool: &PgPool) -> i64 {
 async fn the_same_body_is_a_repeat_whatever_delivery_id_it_carries(pool: PgPool) {
     let db = db(pool);
     let org = OrgId::new();
-    assert!(record_one(&db, org, Some("a"), [1; 32]).await);
-    assert!(!record_one(&db, org, Some("a"), [1; 32]).await);
-    assert!(!record_one(&db, org, Some("b"), [1; 32]).await);
-    assert!(!record_one(&db, org, None, [1; 32]).await);
+    assert!(matches!(
+        record_one(&db, org, Some("a"), [1; 32]).await,
+        Recorded::First
+    ));
+    assert!(matches!(
+        record_one(&db, org, Some("a"), [1; 32]).await,
+        Recorded::Repeat { .. }
+    ));
+    assert!(matches!(
+        record_one(&db, org, Some("b"), [1; 32]).await,
+        Recorded::Repeat { .. }
+    ));
+    assert!(matches!(
+        record_one(&db, org, None, [1; 32]).await,
+        Recorded::Repeat { .. }
+    ));
 }
 
 /// The delivery id is unsigned, so it is never a key: a seen id carrying a
@@ -48,10 +60,17 @@ async fn the_same_body_is_a_repeat_whatever_delivery_id_it_carries(pool: PgPool)
 async fn a_seen_delivery_id_never_makes_a_different_body_a_repeat(pool: PgPool) {
     let db = db(pool);
     let org = OrgId::new();
-    assert!(record_one(&db, org, Some("a"), [1; 32]).await);
-    assert!(record_one(&db, org, Some("a"), [2; 32]).await);
-    assert!(record_one(&db, org, None, [3; 32]).await);
-    assert!(record_one(&db, org, None, [4; 32]).await);
+    for (id, digest) in [
+        (Some("a"), [1; 32]),
+        (Some("a"), [2; 32]),
+        (None, [3; 32]),
+        (None, [4; 32]),
+    ] {
+        assert!(matches!(
+            record_one(&db, org, id, digest).await,
+            Recorded::First
+        ));
+    }
 }
 
 #[sqlx::test]
@@ -59,11 +78,38 @@ async fn a_delivery_rolled_back_with_its_transaction_is_not_a_repeat(pool: PgPoo
     let db = db(pool);
     let org = OrgId::new();
     let mut tx = db.begin(org).await.unwrap();
-    assert!(record(&mut tx, Provider::Github, Some("a"), &[1; 32])
-        .await
-        .unwrap());
+    assert!(matches!(
+        record(&mut tx, Provider::Github, Some("a"), &[1; 32])
+            .await
+            .unwrap(),
+        Recorded::First
+    ));
     tx.rollback().await.unwrap();
-    assert!(record_one(&db, org, Some("a"), [1; 32]).await);
+    assert!(matches!(
+        record_one(&db, org, Some("a"), [1; 32]).await,
+        Recorded::First
+    ));
+}
+
+/// A repeat carries when the original was received, so an operator can tell a
+/// redelivery from a replay by comparing it with GitHub's delivery log.
+#[sqlx::test]
+async fn a_repeat_reports_when_the_original_was_received(pool: PgPool) {
+    let db = db(pool.clone());
+    let org = OrgId::new();
+    record_one(&db, org, Some("a"), [5; 32]).await;
+    let stored: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT received_at FROM tracker_deliveries WHERE org_id = $1")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        record_one(&db, org, Some("a"), [5; 32]).await,
+        Recorded::Repeat {
+            received_at: Some(stored)
+        }
+    );
 }
 
 /// The keys are per org: another org seeing the same body or id is not a repeat.
@@ -71,9 +117,18 @@ async fn a_delivery_rolled_back_with_its_transaction_is_not_a_repeat(pool: PgPoo
 async fn deliveries_do_not_cross_orgs(pool: PgPool) {
     let db = db(pool);
     let (a, b) = (OrgId::new(), OrgId::new());
-    assert!(record_one(&db, a, Some("same"), [9; 32]).await);
-    assert!(record_one(&db, b, Some("same"), [9; 32]).await);
-    assert!(!record_one(&db, b, Some("same"), [9; 32]).await);
+    assert!(matches!(
+        record_one(&db, a, Some("same"), [9; 32]).await,
+        Recorded::First
+    ));
+    assert!(matches!(
+        record_one(&db, b, Some("same"), [9; 32]).await,
+        Recorded::First
+    ));
+    assert!(matches!(
+        record_one(&db, b, Some("same"), [9; 32]).await,
+        Recorded::Repeat { .. }
+    ));
 }
 
 /// Deliberately unscoped SQL in a pinned transaction: RLS, not the predicate,
@@ -154,7 +209,10 @@ async fn the_sweep_reaches_every_org_where_rls_applies(pool: PgPool) {
     rdb.pool().close().await;
     assert_eq!(count_all(&pool).await, 1, "the fresh delivery was kept");
     // A swept delivery is no longer a repeat.
-    assert!(record_one(&db, b, Some("old-b"), [2; 32]).await);
+    assert!(matches!(
+        record_one(&db, b, Some("old-b"), [2; 32]).await,
+        Recorded::First
+    ));
 }
 
 /// Only the org-less sweep needs the `IS NULL` branch, and it never inserts: an

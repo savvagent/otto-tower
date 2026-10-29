@@ -6,6 +6,7 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use of_core::jobs::{Status, Tracker};
+use of_core::tracker_deliveries::Recorded;
 use of_core::trackers::{
     find_binding_by_external_ref, get_connection, resolve_connection_org, Provider,
 };
@@ -271,6 +272,12 @@ pub async fn receive(
 /// record commits only with the delivery's effects, so a delivery that fails is
 /// not mistaken for a repeat when it is redelivered (GitHub does not retry on
 /// its own; a redelivery is manual).
+///
+/// A repeat is logged at `warn` with when the original was received, because a
+/// repeat is either a manual redelivery or a captured delivery being replayed,
+/// and only the operator can tell which: one GitHub's delivery log shows at
+/// that time is a redelivery, one it does not is a replay. Nothing from the
+/// body, its digest, or any secret is logged.
 async fn first_delivery(
     tx: &mut otto_tenant::Tx<'_>,
     provider: Provider,
@@ -279,19 +286,24 @@ async fn first_delivery(
     let Some(delivery) = delivery else {
         return Ok(true);
     };
-    let first =
+    let recorded =
         of_core::tracker_deliveries::record(tx, provider, delivery.id.as_deref(), &delivery.digest)
             .await
             .map_err(ApiError::from)?;
-    if !first {
-        tracing::info!(
-            provider = %provider,
-            org_id = %tx.org(),
-            delivery_id = delivery.id.as_deref().unwrap_or("-"),
-            "repeated webhook delivery; acknowledged without effect"
-        );
+    match recorded {
+        Recorded::First => Ok(true),
+        Recorded::Repeat { received_at } => {
+            let original = received_at.map(|t| t.to_rfc3339());
+            tracing::warn!(
+                provider = %provider,
+                org_id = %tx.org(),
+                delivery_id = delivery.id.as_deref().unwrap_or("-"),
+                original_received_at = original.as_deref().unwrap_or("-"),
+                "repeated webhook delivery; acknowledged without effect"
+            );
+            Ok(false)
+        }
     }
-    Ok(first)
 }
 
 /// How far [`apply`] got.
