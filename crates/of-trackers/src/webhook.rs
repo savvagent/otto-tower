@@ -27,6 +27,34 @@ const GITHUB_DELIVERY_HEADER: &str = "x-github-delivery";
 const MAX_DELIVERY_ID_LEN: usize = 128;
 pub const JIRA_WEBHOOK_SECRET_HEADER: &str = "x-of-webhook-secret";
 
+/// The `action` values GitHub's webhook events reference documents for
+/// `issues` and `issue_comment`, as of 2026-10. They let [`parse_github`]
+/// reject a signed body sent under the other event's unsigned name. An action
+/// GitHub adds later is in neither list and is ignored, which is what
+/// `inbound_decision` already does with it; one GitHub adds to an event that
+/// the other already documents is rejected until these lists catch up.
+const ISSUES_ACTIONS: &[&str] = &[
+    "opened",
+    "edited",
+    "deleted",
+    "transferred",
+    "pinned",
+    "unpinned",
+    "closed",
+    "reopened",
+    "assigned",
+    "unassigned",
+    "labeled",
+    "unlabeled",
+    "locked",
+    "unlocked",
+    "milestoned",
+    "demilestoned",
+    "typed",
+    "untyped",
+];
+const ISSUE_COMMENT_ACTIONS: &[&str] = &["created", "edited", "deleted"];
+
 #[derive(Debug, Clone)]
 pub enum Verification<'a> {
     Github {
@@ -193,24 +221,45 @@ fn verify_jira_secret(headers: &HeaderMap, cipher: &Cipher, encoded_secret: &str
     }
 }
 
+/// Parses a verified GitHub delivery under its `X-GitHub-Event` name.
+///
+/// That header is not signed, so a signed body could be replayed under the
+/// other event's name. Two checks per direction keep a body applied under at
+/// most one event, which is what lets the dedupe key ([`github_delivery`])
+/// leave the event name out:
+///
+/// - Structural: an `issues` body must not carry `comment`, and an
+///   `issue_comment` body must (it does not deserialize without one).
+/// - Action: the body's `action` must not be one only the other event sends
+///   ([`ISSUES_ACTIONS`], [`ISSUE_COMMENT_ACTIONS`]). An action neither
+///   documents is [`ParsedWebhook::Ignored`], not an error, so GitHub does not
+///   mark a genuine delivery carrying a newer action as failed.
+///
+/// `edited` and `deleted` are documented for both events, so for them the
+/// structural check is the only one.
 fn parse_github(headers: &HeaderMap, raw_body: &[u8]) -> Result<ParsedWebhook> {
     let event = header_str(headers, GITHUB_EVENT_HEADER)?;
     match event {
         "issues" => {
             let payload: GithubIssuePayload = parse_json(raw_body, "GitHub")?;
-            // `X-GitHub-Event` is not signed, and an `issue_comment` body
-            // carries everything an `issues` payload needs, so without this a
-            // signed comment body could be replayed as an issue event. The
-            // reverse needs no check: an `issues` body has no `comment`, which
-            // `issue_comment` requires. Each signed body therefore parses under
-            // exactly one event, which is what lets the dedupe key
-            // ([`github_delivery`]) leave the unsigned event name out.
+            // An `issue_comment` body carries everything an `issues` payload
+            // needs, so without this a signed comment body whose action both
+            // events document could be replayed as an issue event.
             if payload.comment.is_some() {
                 return Err(Error::InvalidWebhook(
                     "GitHub issues payload carried a comment object; its X-GitHub-Event \
                      header does not match its body"
                         .into(),
                 ));
+            }
+            match action_fit(&payload.action, ISSUES_ACTIONS, ISSUE_COMMENT_ACTIONS) {
+                ActionFit::Own => {}
+                ActionFit::OtherOnly => {
+                    return Err(action_mismatch("issues", "issue_comment", &payload.action))
+                }
+                ActionFit::Unknown => {
+                    return Ok(ignored_github(&payload.installation, "issues"));
+                }
             }
             Ok(ParsedWebhook::Event(Box::new(WebhookEvent {
                 provider: Provider::Github,
@@ -238,6 +287,15 @@ fn parse_github(headers: &HeaderMap, raw_body: &[u8]) -> Result<ParsedWebhook> {
         }
         "issue_comment" => {
             let payload: GithubIssueCommentPayload = parse_json(raw_body, "GitHub")?;
+            match action_fit(&payload.action, ISSUE_COMMENT_ACTIONS, ISSUES_ACTIONS) {
+                ActionFit::Own => {}
+                ActionFit::OtherOnly => {
+                    return Err(action_mismatch("issue_comment", "issues", &payload.action))
+                }
+                ActionFit::Unknown => {
+                    return Ok(ignored_github(&payload.installation, "issue_comment"));
+                }
+            }
             Ok(ParsedWebhook::Event(Box::new(WebhookEvent {
                 provider: Provider::Github,
                 connection_external_id: payload.installation.id.to_string(),
@@ -272,13 +330,48 @@ fn parse_github(headers: &HeaderMap, raw_body: &[u8]) -> Result<ParsedWebhook> {
         }
         other => {
             let payload: GithubEnvelope = parse_json(raw_body, "GitHub")?;
-            Ok(ParsedWebhook::Ignored(IgnoredWebhook {
-                provider: Provider::Github,
-                connection_external_id: payload.installation.id.to_string(),
-                event: other.to_string(),
-            }))
+            Ok(ignored_github(&payload.installation, other))
         }
     }
+}
+
+/// Where a GitHub `action` sits relative to the event it was sent under.
+enum ActionFit {
+    /// The event documents it (it may also be the other event's).
+    Own,
+    /// Only the other event documents it: the body was sent under the wrong
+    /// event name.
+    OtherOnly,
+    /// Neither documents it, most likely an action newer than these lists.
+    Unknown,
+}
+
+fn action_fit(action: &str, own: &[&str], other: &[&str]) -> ActionFit {
+    if own.contains(&action) {
+        ActionFit::Own
+    } else if other.contains(&action) {
+        ActionFit::OtherOnly
+    } else {
+        ActionFit::Unknown
+    }
+}
+
+fn action_mismatch(event: &str, other_event: &str, action: &str) -> Error {
+    // Bounded by hand: `str`'s `Debug` ignores a precision, and the action is
+    // whatever the (signed, but replayable) body says.
+    let action = action.chars().take(32).collect::<String>();
+    Error::InvalidWebhook(format!(
+        "GitHub {event} payload carried action {action:?}, which only {other_event} sends; its \
+         X-GitHub-Event header does not match its body"
+    ))
+}
+
+fn ignored_github(installation: &GithubInstallation, event: &str) -> ParsedWebhook {
+    ParsedWebhook::Ignored(IgnoredWebhook {
+        provider: Provider::Github,
+        connection_external_id: installation.id.to_string(),
+        event: event.to_string(),
+    })
 }
 
 fn parse_jira(raw_body: &[u8], site_id: String) -> Result<ParsedWebhook> {
@@ -323,7 +416,7 @@ pub struct GithubDelivery {
     /// SHA-256 of the signed body, the dedupe key. The signature binds the
     /// body, so a replay must send the same bytes, whatever headers come with
     /// them. The unsigned `X-GitHub-Event` is deliberately left out: a body
-    /// whose shape does not match its event is rejected by
+    /// whose shape or action does not match its event is rejected by
     /// [`verify_and_parse`] before it is recorded, so a signed body is applied
     /// under one event only, and at most once.
     pub digest: [u8; 32],
@@ -655,6 +748,95 @@ mod tests {
             )
             .unwrap_err();
             assert!(matches!(err, Error::InvalidWebhook(_)), "{event}: {err}");
+        }
+    }
+
+    fn parse_signed_github(event: &str, body: &[u8]) -> Result<ParsedWebhook> {
+        verify_and_parse(
+            Provider::Github,
+            &github_headers(event, body),
+            None,
+            body,
+            Verification::Github {
+                secret: GITHUB_SECRET,
+            },
+        )
+    }
+
+    fn edited_fixture(fixture: &[u8], edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+        let mut v: serde_json::Value = serde_json::from_slice(fixture).unwrap();
+        edit(&mut v);
+        serde_json::to_vec(&v).unwrap()
+    }
+
+    fn with_action(fixture: &[u8], action: &str) -> Vec<u8> {
+        edited_fixture(fixture, |v| v["action"] = action.into())
+    }
+
+    /// The `issues` fixture carries no `comment`, so the structural check
+    /// passes it and only the action check can reject it.
+    #[test]
+    fn a_comment_shaped_action_under_issues_is_rejected_without_a_comment() {
+        let body = with_action(GITHUB_ISSUES_FIXTURE, "created");
+        let err = parse_signed_github("issues", &body).unwrap_err();
+        assert!(matches!(err, Error::InvalidWebhook(_)), "{err}");
+    }
+
+    #[test]
+    fn an_issue_shaped_action_under_issue_comment_is_rejected() {
+        let body = with_action(GITHUB_COMMENT_FIXTURE, "opened");
+        let err = parse_signed_github("issue_comment", &body).unwrap_err();
+        assert!(matches!(err, Error::InvalidWebhook(_)), "{err}");
+    }
+
+    /// With a well-formed `comment` added, an `issues` body deserializes as
+    /// `issue_comment`, so the action check is what rejects it.
+    #[test]
+    fn an_issues_body_cannot_be_sent_as_issue_comment() {
+        let body = edited_fixture(GITHUB_ISSUES_FIXTURE, |v| {
+            v["action"] = "opened".into();
+            v["comment"] = serde_json::json!({"id": 4242, "body": "replayed"});
+        });
+        let err = parse_signed_github("issue_comment", &body).unwrap_err();
+        assert!(matches!(err, Error::InvalidWebhook(_)), "{err}");
+    }
+
+    #[test]
+    fn an_action_neither_event_documents_is_ignored() {
+        for (event, fixture) in [
+            ("issues", GITHUB_ISSUES_FIXTURE),
+            ("issue_comment", GITHUB_COMMENT_FIXTURE),
+        ] {
+            let body = with_action(fixture, "frobnicated");
+            let parsed = parse_signed_github(event, &body).expect("an unknown action parses");
+            let ParsedWebhook::Ignored(ignored) = parsed else {
+                panic!("{event}: expected an unknown action to be ignored, got {parsed:?}");
+            };
+            assert_eq!(ignored.provider, Provider::Github);
+            assert_eq!(ignored.connection_external_id, "123456");
+            assert_eq!(ignored.event, event);
+        }
+    }
+
+    #[test]
+    fn every_documented_action_parses_under_its_own_event() {
+        for (event, fixture, actions) in [
+            ("issues", GITHUB_ISSUES_FIXTURE, ISSUES_ACTIONS),
+            (
+                "issue_comment",
+                GITHUB_COMMENT_FIXTURE,
+                ISSUE_COMMENT_ACTIONS,
+            ),
+        ] {
+            for action in actions {
+                let body = with_action(fixture, action);
+                let parsed = parse_signed_github(event, &body)
+                    .unwrap_or_else(|err| panic!("{event}/{action}: {err}"));
+                let ParsedWebhook::Event(parsed) = parsed else {
+                    panic!("{event}/{action}: expected an event, got {parsed:?}");
+                };
+                assert_eq!(parsed.action, *action);
+            }
         }
     }
 
