@@ -10,7 +10,10 @@ implements it exactly.
 
 ## Status — 2026-10-28
 
-⬜ Not started.
+✅ Shipped in PR #276 (squash 641cc4d). Review changed one decision in Task 3: an action neither
+list documents parses as before instead of being ignored, because an unknown comment action reaches
+`github_comment_decision`, which can mark a job stale (spec §2). The JIRA follow-up is #275; the
+repeat log's flood concern is noted on #271.
 
 ## Global Constraints
 
@@ -49,7 +52,7 @@ proof. Task 2 changes `record`'s signature and its one caller together, so the w
 every commit. Task 3 is a self-contained `of-trackers` change. Task 4 is docs. Each task's gate is
 `cargo test` + `cargo clippy --all-targets -- -D warnings` + `cargo fmt --all`.
 
-## Task 1 — Pinned-only insert policy ⬜
+## Task 1 — Pinned-only insert policy ✅
 
 **Files:** `crates/of-core/migrations/0011_tracker_deliveries_pinned_insert.sql`,
 `crates/of-core/tests/tracker_deliveries.rs`.
@@ -85,7 +88,7 @@ produces policies `tracker_deliveries_tenant_isolation` (`FOR SELECT`), `tracker
 - [ ] Format and commit: `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`,
   `git commit -m "of-core: make tracker_deliveries inserts pinned-only"`.
 
-## Task 2 — `Recorded` with the original `received_at`, logged at `warn` ⬜
+## Task 2 — `Recorded` with the original `received_at`, logged at `warn` ✅
 
 **Files:** `crates/of-core/src/tracker_deliveries.rs`, `crates/of-core/tests/tracker_deliveries.rs`,
 `crates/of-core/tests/platform_events.rs` (if needed), `crates/of-web/src/routes/webhooks.rs`.
@@ -117,7 +120,7 @@ Option<chrono::DateTime<chrono::Utc>> } }` and `record(...) -> Result<Recorded>`
 - [ ] Format and commit: `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`,
   `git commit -m "of-web: log a repeated tracker delivery at warn with its original time"`.
 
-## Task 3 — Positive per-event action check in `parse_github` ⬜
+## Task 3 — Positive per-event action check in `parse_github` ✅
 
 **Files:** `crates/of-trackers/src/webhook.rs`.
 **Interfaces:** `parse_github` (private); `verify_and_parse`'s observable result changes only for
@@ -154,7 +157,7 @@ bodies whose action does not fit their event.
 - [ ] Format and commit: `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`,
   `git commit -m "of-trackers: check a GitHub webhook's action against its event"`.
 
-## Task 4 — Docs ⬜
+## Task 4 — Docs ✅
 
 **Files:** `CLAUDE.md`, the spec (JIRA decision is already §4).
 

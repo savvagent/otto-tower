@@ -1,9 +1,11 @@
 # Tracker webhook dedupe hardening design
 
-> **Status:** DRAFT — splits `tracker_deliveries`' policy so an unpinned statement can no longer
-> insert, adds a positive per-event action check to `parse_github`, logs a repeated delivery at
-> `warn` with the original row's `received_at`, and records the decision not to dedupe JIRA
-> webhooks. Closes savvagent/otto-factory#273.
+> **Status:** IMPLEMENTED — shipped in PR #276 (squash 641cc4d). Splits `tracker_deliveries`'
+> policy so an unpinned statement can no longer insert, adds a positive per-event action check to
+> `parse_github` (an action only the other event sends is rejected; one neither lists parses as
+> before), logs a repeated delivery at `warn` with the original row's `received_at`, and records
+> the decision not to dedupe JIRA webhooks (follow-up savvagent/otto-factory#275). Closes
+> savvagent/otto-factory#273.
 >
 > **Follows:** `docs/specs/2026-10-28-github-delivery-dedupe-design.md` (PR #268, #265), whose
 > security reviews found these gaps.
