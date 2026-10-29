@@ -1,26 +1,28 @@
 //! Tracker webhook deliveries: repeat detection, per-org keys, and isolation.
 //!
-//! `tracker_deliveries` is a tenant table whose policy lets an *unpinned*
-//! statement reach every org's rows (the retention sweep has no org). So both
-//! sides need proving: a pinned transaction sees and touches only its own org's
-//! rows, and the org-less sweep reaches every org's where RLS applies.
+//! `tracker_deliveries` is a tenant table whose `SELECT` and `DELETE` policies
+//! let an *unpinned* statement reach every org's rows (the retention sweep has
+//! no org), while its `INSERT` policy admits a row only for the pinned org. So
+//! every side needs proving: a pinned transaction sees and touches only its own
+//! org's rows, an unpinned insert is refused, and the org-less sweep reaches
+//! every org's where RLS applies.
 
 mod common;
 
 use common::db;
-use of_core::tracker_deliveries::{record, sweep};
+use of_core::tracker_deliveries::{record, sweep, Recorded};
 use of_core::trackers::Provider;
 use otto_tenant::ids::OrgId;
 use otto_tenant::Db;
 use sqlx::PgPool;
 
-async fn record_one(db: &Db, org: OrgId, id: Option<&str>, digest: [u8; 32]) -> bool {
+async fn record_one(db: &Db, org: OrgId, id: Option<&str>, digest: [u8; 32]) -> Recorded {
     let mut tx = db.begin(org).await.unwrap();
-    let first = record(&mut tx, Provider::Github, id, &digest)
+    let recorded = record(&mut tx, Provider::Github, id, &digest)
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    first
+    recorded
 }
 
 async fn count_all(pool: &PgPool) -> i64 {
@@ -34,10 +36,22 @@ async fn count_all(pool: &PgPool) -> i64 {
 async fn the_same_body_is_a_repeat_whatever_delivery_id_it_carries(pool: PgPool) {
     let db = db(pool);
     let org = OrgId::new();
-    assert!(record_one(&db, org, Some("a"), [1; 32]).await);
-    assert!(!record_one(&db, org, Some("a"), [1; 32]).await);
-    assert!(!record_one(&db, org, Some("b"), [1; 32]).await);
-    assert!(!record_one(&db, org, None, [1; 32]).await);
+    assert!(matches!(
+        record_one(&db, org, Some("a"), [1; 32]).await,
+        Recorded::First
+    ));
+    assert!(matches!(
+        record_one(&db, org, Some("a"), [1; 32]).await,
+        Recorded::Repeat { .. }
+    ));
+    assert!(matches!(
+        record_one(&db, org, Some("b"), [1; 32]).await,
+        Recorded::Repeat { .. }
+    ));
+    assert!(matches!(
+        record_one(&db, org, None, [1; 32]).await,
+        Recorded::Repeat { .. }
+    ));
 }
 
 /// The delivery id is unsigned, so it is never a key: a seen id carrying a
@@ -46,10 +60,17 @@ async fn the_same_body_is_a_repeat_whatever_delivery_id_it_carries(pool: PgPool)
 async fn a_seen_delivery_id_never_makes_a_different_body_a_repeat(pool: PgPool) {
     let db = db(pool);
     let org = OrgId::new();
-    assert!(record_one(&db, org, Some("a"), [1; 32]).await);
-    assert!(record_one(&db, org, Some("a"), [2; 32]).await);
-    assert!(record_one(&db, org, None, [3; 32]).await);
-    assert!(record_one(&db, org, None, [4; 32]).await);
+    for (id, digest) in [
+        (Some("a"), [1; 32]),
+        (Some("a"), [2; 32]),
+        (None, [3; 32]),
+        (None, [4; 32]),
+    ] {
+        assert!(matches!(
+            record_one(&db, org, id, digest).await,
+            Recorded::First
+        ));
+    }
 }
 
 #[sqlx::test]
@@ -57,11 +78,64 @@ async fn a_delivery_rolled_back_with_its_transaction_is_not_a_repeat(pool: PgPoo
     let db = db(pool);
     let org = OrgId::new();
     let mut tx = db.begin(org).await.unwrap();
-    assert!(record(&mut tx, Provider::Github, Some("a"), &[1; 32])
-        .await
-        .unwrap());
+    assert!(matches!(
+        record(&mut tx, Provider::Github, Some("a"), &[1; 32])
+            .await
+            .unwrap(),
+        Recorded::First
+    ));
     tx.rollback().await.unwrap();
-    assert!(record_one(&db, org, Some("a"), [1; 32]).await);
+    assert!(matches!(
+        record_one(&db, org, Some("a"), [1; 32]).await,
+        Recorded::First
+    ));
+}
+
+/// A repeat carries when the original was received, so an operator can tell a
+/// redelivery from a replay by comparing it with GitHub's delivery log.
+#[sqlx::test]
+async fn a_repeat_reports_when_the_original_was_received(pool: PgPool) {
+    let db = db(pool.clone());
+    let org = OrgId::new();
+    record_one(&db, org, Some("a"), [5; 32]).await;
+    let stored: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT received_at FROM tracker_deliveries WHERE org_id = $1")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        record_one(&db, org, Some("a"), [5; 32]).await,
+        Recorded::Repeat {
+            received_at: Some(stored)
+        }
+    );
+}
+
+/// A repeat's original time is its own org's: org B, recording a body org A
+/// recorded earlier, is told B's own time, never A's.
+#[sqlx::test]
+async fn a_repeat_reports_only_its_own_orgs_original(pool: PgPool) {
+    let db = db(pool.clone());
+    let (a, b) = (OrgId::new(), OrgId::new());
+    record_one(&db, a, None, [6; 32]).await;
+    sqlx::query("UPDATE tracker_deliveries SET received_at = now() - interval '5 days'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    record_one(&db, b, None, [6; 32]).await;
+    let b_stored: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT received_at FROM tracker_deliveries WHERE org_id = $1")
+            .bind(b)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        record_one(&db, b, None, [6; 32]).await,
+        Recorded::Repeat {
+            received_at: Some(b_stored)
+        }
+    );
 }
 
 /// The keys are per org: another org seeing the same body or id is not a repeat.
@@ -69,9 +143,18 @@ async fn a_delivery_rolled_back_with_its_transaction_is_not_a_repeat(pool: PgPoo
 async fn deliveries_do_not_cross_orgs(pool: PgPool) {
     let db = db(pool);
     let (a, b) = (OrgId::new(), OrgId::new());
-    assert!(record_one(&db, a, Some("same"), [9; 32]).await);
-    assert!(record_one(&db, b, Some("same"), [9; 32]).await);
-    assert!(!record_one(&db, b, Some("same"), [9; 32]).await);
+    assert!(matches!(
+        record_one(&db, a, Some("same"), [9; 32]).await,
+        Recorded::First
+    ));
+    assert!(matches!(
+        record_one(&db, b, Some("same"), [9; 32]).await,
+        Recorded::First
+    ));
+    assert!(matches!(
+        record_one(&db, b, Some("same"), [9; 32]).await,
+        Recorded::Repeat { .. }
+    ));
 }
 
 /// Deliberately unscoped SQL in a pinned transaction: RLS, not the predicate,
@@ -152,5 +235,99 @@ async fn the_sweep_reaches_every_org_where_rls_applies(pool: PgPool) {
     rdb.pool().close().await;
     assert_eq!(count_all(&pool).await, 1, "the fresh delivery was kept");
     // A swept delivery is no longer a repeat.
-    assert!(record_one(&db, b, Some("old-b"), [2; 32]).await);
+    assert!(matches!(
+        record_one(&db, b, Some("old-b"), [2; 32]).await,
+        Recorded::First
+    ));
+}
+
+/// Only the org-less sweep needs the `IS NULL` branch, and it never inserts: an
+/// unpinned insert, which no code path makes, is refused rather than admitted
+/// for any org. The unpinned `DELETE` keeps its `WHERE` on purpose: a DELETE
+/// with no `WHERE` reads no rows, so the `SELECT` policy would not bind it and
+/// the assertion would not pin that policy's `IS NULL` branch.
+#[sqlx::test]
+async fn rls_scopes_an_unpinned_tracker_delivery_insert_to_nothing(pool: PgPool) {
+    let db = db(pool.clone());
+    let (a, b) = (OrgId::new(), OrgId::new());
+    record_one(&db, a, Some("a"), [1; 32]).await;
+    record_one(&db, b, Some("b"), [2; 32]).await;
+
+    let mut tx = db.begin_unpinned().await.unwrap();
+    sqlx::query("SET LOCAL ROLE otto_app")
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    let forged = sqlx::query(
+        "INSERT INTO tracker_deliveries (org_id, provider, digest) \
+         VALUES ($1, 'github', decode(repeat('cd', 32), 'hex'))",
+    )
+    .bind(a)
+    .execute(tx.conn())
+    .await;
+    // 42501 alone is also a missing grant; the message is what says it was the
+    // policy's `WITH CHECK` refusing, not some other failure passing for it.
+    let error = forged.expect_err("an unpinned insert recorded a delivery");
+    let error = error.as_database_error().expect("a database error");
+    assert_eq!(error.code().as_deref(), Some("42501"));
+    assert!(
+        error.message().contains("row-level security"),
+        "refused for another reason: {}",
+        error.message()
+    );
+    tx.rollback().await.unwrap();
+
+    let mut tx = db.begin_unpinned().await.unwrap();
+    sqlx::query("SET LOCAL ROLE otto_app")
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    let swept = sqlx::query("DELETE FROM tracker_deliveries WHERE received_at <= now()")
+        .execute(tx.conn())
+        .await
+        .unwrap()
+        .rows_affected();
+    tx.rollback().await.unwrap();
+    assert_eq!(swept, 2, "an unpinned delete must reach every org's rows");
+
+    let mut policies: Vec<(String, String)> = sqlx::query_as(
+        "SELECT p.polname::text, p.polcmd::text FROM pg_policy p \
+         JOIN pg_class c ON c.oid = p.polrelid \
+         WHERE c.relname = 'tracker_deliveries'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    policies.sort();
+    assert_eq!(
+        policies,
+        vec![
+            ("tracker_deliveries_insert".to_owned(), "a".to_owned()),
+            ("tracker_deliveries_sweep".to_owned(), "d".to_owned()),
+            (
+                "tracker_deliveries_tenant_isolation".to_owned(),
+                "r".to_owned()
+            ),
+        ]
+    );
+}
+
+/// `verify_tenant_isolation` discovers tenant tables by a policy named
+/// `<table>_tenant_isolation`; splitting the policy by command must keep that
+/// name on one of them, or the startup check silently stops vouching for it.
+#[sqlx::test]
+async fn the_startup_check_still_vouches_for_tracker_deliveries(pool: PgPool) {
+    let db = db(pool);
+    let report = db.verify_tenant_isolation().await.unwrap();
+    let table = report
+        .tables
+        .iter()
+        .find(|t| t.name == "tracker_deliveries")
+        .unwrap_or_else(|| {
+            panic!(
+                "tracker_deliveries missing from {:?}",
+                report.tables.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        });
+    assert!(table.rls_forced);
 }

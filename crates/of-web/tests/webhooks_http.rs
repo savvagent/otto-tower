@@ -1409,6 +1409,23 @@ async fn a_body_sent_under_the_wrong_event_is_rejected_and_does_not_pre_empt_the
     );
 }
 
+/// The action check rejects, at the route, a body whose action only the other
+/// event sends, even with no `comment` object to give it away: `404`, and no
+/// delivery recorded (before the check it was recorded and dropped downstream).
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn an_action_only_the_other_event_sends_is_rejected_and_not_recorded(pool: PgPool) {
+    let h = harness(pool).await;
+    let org = OrgId::new();
+    bind_github_repo(&h, org, INSTALLATION, "acme/api").await;
+    open_issue(&h, org, INSTALLATION, "acme/api", 17).await;
+    let recorded = deliveries_recorded(&h, org).await;
+
+    let body = github_issue(INSTALLATION, "acme/api", 17, "created", None, &after_now());
+    let reply = post_github_issue(&h, &body).await;
+    assert_eq!(reply.status(), StatusCode::NOT_FOUND);
+    assert_eq!(deliveries_recorded(&h, org).await, recorded);
+}
+
 /// A close of a claimed job is applied in a second pass, after its first
 /// pass's transaction (and the delivery record in it) was dropped for the
 /// standing lookup. The second pass records the delivery again, so the close

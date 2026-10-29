@@ -150,7 +150,10 @@ org's rows while a pinned transaction still sees only its own. A DELETE-only pol
 that: a DELETE's `WHERE` reads the rows it filters, so the table's SELECT policies apply to it too,
 which is why `audit_events` has `audit_events_retention_read` beside `audit_events_retention`
 (`0002_org_less_retention.sql`; `housekeeping_deletes_where_row_level_security_applies` runs it as
-`otto_app`).)
+`otto_app`).) `tracker_deliveries` keeps the second branch off its insert side: separate
+`SELECT`/`DELETE` policies carry it, and its `INSERT` policy is pinned-only
+(`0011_tracker_deliveries_pinned_insert.sql`), because no org-less code inserts. Like every policy, that binds only
+where RLS applies; on a bypassing role guard 1 holds it (`tracker_deliveries::record` takes a `Tx`).
 `savvagent/otto-factory#70` is what the fallback shape produced for a since-squashed relabeling
 `UPDATE`; under this deployment's actual (bypassing) role it produced the first outcome instead,
 harmlessly, because that rewrite was genuinely meant to apply the same way to every org. There is no
