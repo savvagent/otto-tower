@@ -1,9 +1,12 @@
 # Tracker webhook dedupe hardening design
 
-> **Status:** DRAFT — splits `tracker_deliveries`' policy so an unpinned statement can no longer
-> insert, adds a positive per-event action check to `parse_github`, logs a repeated delivery at
-> `warn` with the original row's `received_at`, and records the decision not to dedupe JIRA
-> webhooks. Closes savvagent/otto-factory#273.
+> **Status:** IMPLEMENTED — shipped in PR #276 (squash 641cc4d). Splits `tracker_deliveries`'
+> policy so an unpinned statement can no longer insert, adds a positive per-event action check to
+> `parse_github` (an action only the other event sends is rejected; one neither lists parses as
+> before, only ever after the signature verified, pinned by
+> `an_action_neither_event_documents_parses_as_before`), logs a repeated delivery at `warn` with the original row's `received_at`, and records
+> the decision not to dedupe JIRA webhooks (follow-up savvagent/otto-factory#275). Closes
+> savvagent/otto-factory#273.
 >
 > **Follows:** `docs/specs/2026-10-28-github-delivery-dedupe-design.md` (PR #268, #265), whose
 > security reviews found these gaps.
@@ -225,7 +228,7 @@ done here. It is filed as savvagent/otto-factory#275.
 ## Assumptions
 
 - **The action lists are GitHub's documented sets as of 2026-10.** A future action falls into
-  "neither" and is ignored, which matches what `inbound_decision` does with it today.
+  "neither" and parses as before (§2, rule 3).
 - **Rejecting an other-event action is a `404` like the `comment` check**, not an ignore: the
   header and body disagree, which a genuine GitHub delivery never does.
 - **Policy names `tracker_deliveries_insert` and `tracker_deliveries_sweep`** follow no enforced
