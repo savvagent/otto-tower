@@ -41,7 +41,7 @@ repeat log's flood concern is noted on #271.
 | `crates/of-core/src/tracker_deliveries.rs` | **Modify.** `Recorded` enum; `record` reads the original `received_at` on a conflict. |
 | `crates/of-core/tests/platform_events.rs` | **Modify.** Adapt to `record`'s new return type if it asserts on it. |
 | `crates/of-web/src/routes/webhooks.rs` | **Modify.** `first_delivery` matches `Recorded`, logs a repeat at `warn` with `original_received_at`. |
-| `crates/of-trackers/src/webhook.rs` | **Modify.** `ISSUES_ACTIONS` / `ISSUE_COMMENT_ACTIONS`; reject an other-event action, ignore an unknown one; doc comment on the overlap; unit tests. |
+| `crates/of-trackers/src/webhook.rs` | **Modify.** `ISSUES_ACTIONS` / `ISSUE_COMMENT_ACTIONS`; reject an action only the other event sends, let one neither lists parse as before; doc comment on the overlap; unit tests. |
 | `crates/of-web/tests/webhooks_http.rs` | **Modify (only if needed).** Existing repeat test still asserts `200` + no effect. |
 | `CLAUDE.md` | **Modify.** `tracker_deliveries`' insert is pinned-only; only its `SELECT`/`DELETE` have the two branches. |
 
@@ -135,21 +135,24 @@ bodies whose action does not fit their event.
     to `opened`, sent as `issue_comment` → `Err(InvalidWebhook)`.
   - `an_issues_body_cannot_be_sent_as_issue_comment`: the `issues` fixture plus a `comment` object,
     action `opened`, sent as `issue_comment` → `Err` (keeps the cross-check of spec §2's table).
-  - `an_action_neither_event_documents_is_ignored`: `issues` fixture with action `frobnicated` →
-    `Ok(ParsedWebhook::Ignored(_))`; the same for the comment fixture as `issue_comment`.
+  - `an_action_neither_event_documents_parses_as_before`: `issues` fixture with action
+    `frobnicated` → `Ok(ParsedWebhook::Event(_))` with that action; the same for the comment
+    fixture as `issue_comment`. (Review of PR #276 replaced an earlier "is ignored" version: an
+    unknown comment action reaches `github_comment_decision`, so ignoring it would drop a
+    ticket-change mark.)
   - `every_documented_action_parses_under_its_own_event`: loop over each set, edit the fixture's
     action, assert `ParsedWebhook::Event(_)`.
   Use the existing `verify_and_parse` / signature helpers the module's tests already use (sign the
   edited body).
-- [x] Run `cargo test -p of-trackers webhook` — expect the reject and ignore tests to FAIL.
+- [x] Run `cargo test -p of-trackers webhook` — expect the reject tests to FAIL.
 - [x] Implement: `const ISSUES_ACTIONS: &[&str]` and `const ISSUE_COMMENT_ACTIONS: &[&str]` (spec
   §2 lists, with a comment naming GitHub's webhook reference and the 2026-10 snapshot). A small
-  helper `fn action_fit(action, own, other) -> ActionFit { Own, OtherOnly, Unknown }`. In each
-  branch after deserialization (and, for `issues`, after the `comment` check): `OtherOnly` →
-  `Error::InvalidWebhook("GitHub {event} payload carried the action {action:?}, which only
-  {other_event} sends; its X-GitHub-Event header does not match its body")` — the action is a
-  short GitHub-controlled string from a signed body; bound it with `{:.32}` anyway; `Unknown` →
-  `ParsedWebhook::Ignored(IgnoredWebhook { provider, connection_external_id, event })`. Update the
+  helper `fn only_other_sends(action, own, other) -> bool`. In each branch after deserialization
+  (and, for `issues`, after the `comment` check): when it holds, `Error::InvalidWebhook("GitHub
+  {event} payload carried action {action:?}, which only {other_event} sends; its X-GitHub-Event
+  header does not match its body")` — the action is a short string from a signed body, bounded by
+  hand with `chars().take(32)` (a `{:.32}` precision does nothing to `str`'s `Debug`); otherwise
+  the body parses as before. Update the
   doc comment on `parse_github` and the `issues` branch comment: two checks per direction, and the
   `edited`/`deleted` overlap where the structural check is the only one.
 - [x] Run `cargo test -p of-trackers` and `cargo test -p of-web --test webhooks_http` — expect

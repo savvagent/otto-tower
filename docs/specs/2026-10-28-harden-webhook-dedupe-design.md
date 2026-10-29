@@ -228,7 +228,7 @@ done here. It is filed as savvagent/otto-factory#275.
 ## Assumptions
 
 - **The action lists are GitHub's documented sets as of 2026-10.** A future action falls into
-  "neither" and is ignored, which matches what `inbound_decision` does with it today.
+  "neither" and parses as before (§2, rule 3).
 - **Rejecting an other-event action is a `404` like the `comment` check**, not an ignore: the
   header and body disagree, which a genuine GitHub delivery never does.
 - **Policy names `tracker_deliveries_insert` and `tracker_deliveries_sweep`** follow no enforced
