@@ -87,8 +87,8 @@ pub async fn record(
 /// Runs on the pool with no org pinned (background code only), so it carries no
 /// `org_id` predicate on purpose: the table's `SELECT` and `DELETE` policies
 /// both have an unpinned branch, so an unpinned statement reaches every org's
-/// rows (its `INSERT` policy has none: only a pinned transaction records). A forgotten delivery replayed later is applied
-/// again. Against an existing job only its revision and `ticket_changed_at`
+/// rows (its `INSERT` policy has none: only a pinned transaction records). A
+/// forgotten delivery replayed later is applied again. Against an existing job only its revision and `ticket_changed_at`
 /// checks guard it, and if the job is gone a replayed `opened` or `labeled`
 /// event creates it again.
 pub async fn sweep(db: &Db, keep_days: i32) -> Result<u64> {

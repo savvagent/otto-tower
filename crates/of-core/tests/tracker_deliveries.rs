@@ -239,7 +239,13 @@ async fn rls_scopes_an_unpinned_tracker_delivery_insert_to_nothing(pool: PgPool)
     .bind(a)
     .execute(tx.conn())
     .await;
-    assert!(forged.is_err(), "an unpinned insert recorded a delivery");
+    // 42501 is what a policy's `WITH CHECK` raises, so this is the policy
+    // refusing, not some other failure passing for it.
+    let code = forged
+        .expect_err("an unpinned insert recorded a delivery")
+        .as_database_error()
+        .and_then(|e| e.code().map(|c| c.into_owned()));
+    assert_eq!(code.as_deref(), Some("42501"));
     tx.rollback().await.unwrap();
 
     let mut tx = db.begin_unpinned().await.unwrap();
