@@ -3,7 +3,8 @@
 > **Status:** IMPLEMENTED — shipped in PR #276 (squash 641cc4d). Splits `tracker_deliveries`'
 > policy so an unpinned statement can no longer insert, adds a positive per-event action check to
 > `parse_github` (an action only the other event sends is rejected; one neither lists parses as
-> before), logs a repeated delivery at `warn` with the original row's `received_at`, and records
+> before, only ever after the signature verified, pinned by
+> `an_action_neither_event_documents_parses_as_before`), logs a repeated delivery at `warn` with the original row's `received_at`, and records
 > the decision not to dedupe JIRA webhooks (follow-up savvagent/otto-factory#275). Closes
 > savvagent/otto-factory#273.
 >
