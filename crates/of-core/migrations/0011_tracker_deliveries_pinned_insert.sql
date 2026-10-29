@@ -16,6 +16,10 @@
 --
 -- There is still no UPDATE policy: a recorded delivery is never rewritten.
 --
+-- Like every policy, these bind only where RLS applies. Where the connecting
+-- role bypasses it, guard 1 is what holds: the one insert,
+-- `of_core::tracker_deliveries::record`, takes a pinned `Tx` and binds its org.
+--
 -- Schema only: no existing row is read or rewritten.
 
 DROP POLICY tracker_deliveries_tenant_isolation ON tracker_deliveries;

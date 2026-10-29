@@ -265,13 +265,16 @@ async fn rls_scopes_an_unpinned_tracker_delivery_insert_to_nothing(pool: PgPool)
     .bind(a)
     .execute(tx.conn())
     .await;
-    // 42501 is what a policy's `WITH CHECK` raises, so this is the policy
-    // refusing, not some other failure passing for it.
-    let code = forged
-        .expect_err("an unpinned insert recorded a delivery")
-        .as_database_error()
-        .and_then(|e| e.code().map(|c| c.into_owned()));
-    assert_eq!(code.as_deref(), Some("42501"));
+    // 42501 alone is also a missing grant; the message is what says it was the
+    // policy's `WITH CHECK` refusing, not some other failure passing for it.
+    let error = forged.expect_err("an unpinned insert recorded a delivery");
+    let error = error.as_database_error().expect("a database error");
+    assert_eq!(error.code().as_deref(), Some("42501"));
+    assert!(
+        error.message().contains("row-level security"),
+        "refused for another reason: {}",
+        error.message()
+    );
     tx.rollback().await.unwrap();
 
     let mut tx = db.begin_unpinned().await.unwrap();

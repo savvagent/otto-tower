@@ -29,10 +29,12 @@ pub const JIRA_WEBHOOK_SECRET_HEADER: &str = "x-of-webhook-secret";
 
 /// The `action` values GitHub's webhook events reference documents for
 /// `issues` and `issue_comment`, as of 2026-10. They let [`parse_github`]
-/// reject a signed body sent under the other event's unsigned name. An action
-/// GitHub adds later is in neither list and is ignored, which is what
-/// `inbound_decision` already does with it; one GitHub adds to an event that
-/// the other already documents is rejected until these lists catch up.
+/// reject a signed body sent under the other event's unsigned name. Only an
+/// action the *other* event documents is refused; one neither lists (say, one
+/// GitHub adds later) parses as before, so a new comment action still reaches
+/// `github_comment_decision` and a new issue action still reaches
+/// `inbound_decision`, which does nothing with it. One GitHub adds to an event
+/// that the other already documents is rejected until these lists catch up.
 const ISSUES_ACTIONS: &[&str] = &[
     "opened",
     "edited",
@@ -232,8 +234,7 @@ fn verify_jira_secret(headers: &HeaderMap, cipher: &Cipher, encoded_secret: &str
 ///   `issue_comment` body must (it does not deserialize without one).
 /// - Action: the body's `action` must not be one only the other event sends
 ///   ([`ISSUES_ACTIONS`], [`ISSUE_COMMENT_ACTIONS`]). An action neither
-///   documents is [`ParsedWebhook::Ignored`], not an error, so GitHub does not
-///   mark a genuine delivery carrying a newer action as failed.
+///   documents is not this check's to judge and parses as it always did.
 ///
 /// `edited` and `deleted` are documented for both events, so for them the
 /// structural check is the only one.
@@ -252,14 +253,8 @@ fn parse_github(headers: &HeaderMap, raw_body: &[u8]) -> Result<ParsedWebhook> {
                         .into(),
                 ));
             }
-            match action_fit(&payload.action, ISSUES_ACTIONS, ISSUE_COMMENT_ACTIONS) {
-                ActionFit::Own => {}
-                ActionFit::OtherOnly => {
-                    return Err(action_mismatch("issues", "issue_comment", &payload.action))
-                }
-                ActionFit::Unknown => {
-                    return Ok(ignored_github(&payload.installation, "issues"));
-                }
+            if only_other_sends(&payload.action, ISSUES_ACTIONS, ISSUE_COMMENT_ACTIONS) {
+                return Err(action_mismatch("issues", "issue_comment", &payload.action));
             }
             Ok(ParsedWebhook::Event(Box::new(WebhookEvent {
                 provider: Provider::Github,
@@ -287,14 +282,8 @@ fn parse_github(headers: &HeaderMap, raw_body: &[u8]) -> Result<ParsedWebhook> {
         }
         "issue_comment" => {
             let payload: GithubIssueCommentPayload = parse_json(raw_body, "GitHub")?;
-            match action_fit(&payload.action, ISSUE_COMMENT_ACTIONS, ISSUES_ACTIONS) {
-                ActionFit::Own => {}
-                ActionFit::OtherOnly => {
-                    return Err(action_mismatch("issue_comment", "issues", &payload.action))
-                }
-                ActionFit::Unknown => {
-                    return Ok(ignored_github(&payload.installation, "issue_comment"));
-                }
+            if only_other_sends(&payload.action, ISSUE_COMMENT_ACTIONS, ISSUES_ACTIONS) {
+                return Err(action_mismatch("issue_comment", "issues", &payload.action));
             }
             Ok(ParsedWebhook::Event(Box::new(WebhookEvent {
                 provider: Provider::Github,
@@ -335,25 +324,10 @@ fn parse_github(headers: &HeaderMap, raw_body: &[u8]) -> Result<ParsedWebhook> {
     }
 }
 
-/// Where a GitHub `action` sits relative to the event it was sent under.
-enum ActionFit {
-    /// The event documents it (it may also be the other event's).
-    Own,
-    /// Only the other event documents it: the body was sent under the wrong
-    /// event name.
-    OtherOnly,
-    /// Neither documents it, most likely an action newer than these lists.
-    Unknown,
-}
-
-fn action_fit(action: &str, own: &[&str], other: &[&str]) -> ActionFit {
-    if own.contains(&action) {
-        ActionFit::Own
-    } else if other.contains(&action) {
-        ActionFit::OtherOnly
-    } else {
-        ActionFit::Unknown
-    }
+/// Whether `action` is documented only for the other event: the body was sent
+/// under the wrong event name.
+fn only_other_sends(action: &str, own: &[&str], other: &[&str]) -> bool {
+    !own.contains(&action) && other.contains(&action)
 }
 
 fn action_mismatch(event: &str, other_event: &str, action: &str) -> Error {
@@ -802,19 +776,20 @@ mod tests {
     }
 
     #[test]
-    fn an_action_neither_event_documents_is_ignored() {
+    /// An action neither list documents (one GitHub adds later) is not a
+    /// mismatch: it parses as it did before the action check, so a new comment
+    /// action still counts as a ticket change downstream.
+    fn an_action_neither_event_documents_parses_as_before() {
         for (event, fixture) in [
             ("issues", GITHUB_ISSUES_FIXTURE),
             ("issue_comment", GITHUB_COMMENT_FIXTURE),
         ] {
             let body = with_action(fixture, "frobnicated");
             let parsed = parse_signed_github(event, &body).expect("an unknown action parses");
-            let ParsedWebhook::Ignored(ignored) = parsed else {
-                panic!("{event}: expected an unknown action to be ignored, got {parsed:?}");
+            let ParsedWebhook::Event(parsed) = parsed else {
+                panic!("{event}: expected an unknown action to parse as an event, got {parsed:?}");
             };
-            assert_eq!(ignored.provider, Provider::Github);
-            assert_eq!(ignored.connection_external_id, "123456");
-            assert_eq!(ignored.event, event);
+            assert_eq!(parsed.action, "frobnicated");
         }
     }
 

@@ -171,9 +171,10 @@ pub async fn receive(
     // authenticates with a shared secret, not a signature over the body: anyone
     // holding the secret can forge any body, so a body digest would not stop a
     // replay. Ignored events have no effect to repeat. The key is the signed
-    // body alone; `verify_and_parse` has already rejected a body whose shape
-    // does not match its unsigned `X-GitHub-Event`, so a captured body cannot
-    // be recorded under one event to shadow its genuine delivery under another.
+    // body alone; `verify_and_parse` has already rejected a body whose shape or
+    // action does not match its unsigned `X-GitHub-Event`, so a captured body
+    // cannot be recorded under one event to shadow its genuine delivery under
+    // another.
     //
     // The record is made before `apply` knows whether the event matches a
     // binding, so an event that did nothing (no binding yet, a dropped action)

@@ -140,14 +140,16 @@ For a parsed `issues` or `issue_comment` payload, in order after deserialization
 2. Otherwise, the action is documented for the **other** event only (e.g. `created` under `issues`,
    `opened` under `issue_comment`): `Error::InvalidWebhook("… X-GitHub-Event header does not match
    its body")`, the same rejection as the `comment` check, logged and answered `404` by the route.
-3. Otherwise (an action neither documents, such as one GitHub adds later): `ParsedWebhook::Ignored`
-   with the event name. It is acknowledged and never applied or recorded.
+3. Otherwise (an action neither documents, such as one GitHub adds later): proceed as today. It is
+   not a mismatch, and this check does not judge it.
 
-Why (3) is `Ignored`, not an error: `inbound_decision` already acts only on `opened`, `edited`,
-`labeled` and `closed` for issues, so an unknown issue action does nothing today; ignoring it keeps
-that, and keeps GitHub from marking a genuine delivery failed because it carries an action newer
-than this list. What changes is that an applied event's action is now always one its event
-documents.
+Why (3) proceeds rather than being ignored: an unknown *issue* action already does nothing
+(`inbound_decision` acts only on `opened`, `edited`, `labeled` and `closed`), but an unknown
+*comment* action on an existing job reaches `github_comment_decision`, which never looks at the
+action and can set the job's `ticketStale` mark. Ignoring it would silently drop that signal
+(found in PR #276's review; an earlier draft of this section ignored it). Proceeding also keeps
+GitHub from marking a genuine delivery with a newer action as failed. Such a body still passes
+both structural checks, which is what separates the events for it.
 
 Together with the structural checks, a body is applied under at most one event name:
 
@@ -156,14 +158,16 @@ Together with the structural checks, a body is applied under at most one event n
 | comment body as `issues` | rejected (`comment` present) | rejected (`comment` present, and action) | rejected (`comment` present) |
 | issue body as `issue_comment` | rejected (no `comment`, deserialization fails) | rejected (no `comment`, and action) | rejected (no `comment`) |
 
-The `edited`/`deleted` column is where the structural check is the only one; that is the overlap in
-the premise corrections, and the doc comment on `parse_github` says so.
+The `edited`/`deleted` column and the "neither" column are where the structural check is the only
+one: the first is the overlap in the premise corrections, the second an action the lists do not
+know yet. The doc comment on `parse_github` says so.
 
 **Tests** (unit, in `webhook.rs`'s test module): an `issue_comment` fixture whose `comment` is
 removed and action set to `created`, sent as `issues`, is rejected by the action check alone (it
 would pass the `comment` check); an `issues` fixture sent as `issue_comment` with an added `comment`
-object and action `opened` is rejected by the action check alone; an `issues` body with action
-`frobnicated` parses to `Ignored`; every action in each set parses as an event under its own name.
+object and action `opened` is rejected by the action check alone; a body of either event with
+action `frobnicated` parses as an event under its own name, as before; every action in each set
+parses as an event under its own name.
 
 ## §3 Repeat logged at `warn` with the original `received_at`
 
@@ -242,13 +246,14 @@ done here. It is filed as savvagent/otto-factory#275.
 
 ## Risks & Open Questions
 
-- **GitHub adds an action to both events** (as `edited`/`deleted` are): until the lists are
-  updated it is ignored under both, which loses nothing applied today.
+- **GitHub adds an action to both events** (as `edited`/`deleted` are), or to one event only:
+  until the lists are updated it parses as before under its own event, separated by the structural
+  checks alone.
 - **GitHub extends one event with an action already in the other's list** (say `pinned` for
   `issue_comment`): until the lists are updated, rule 2 rejects that genuine delivery with `404`
   and GitHub shows it as failed. Nothing applied today is lost (the structural checks still separate
   the bodies, and `inbound_decision` acts on no such comment action), so the cost is a noisy
   delivery log until the lists catch up; the rejection's `warn` line names the action.
-- **A previously-applied comment action that is not in the list** would now be ignored. All three
-  documented comment actions are in it, so none is lost.
+- **A previously-applied comment action that is not in the list** still applies: an action neither
+  list knows is never refused or ignored by the action check.
 - **JIRA signed webhooks** are deferred to savvagent/otto-factory#275 (§4).
