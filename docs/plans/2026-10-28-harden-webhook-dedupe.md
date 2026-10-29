@@ -62,8 +62,9 @@ produces policies `tracker_deliveries_tenant_isolation` (`FOR SELECT`), `tracker
   via `record_one`). Open `db.begin_unpinned()`, `SET LOCAL ROLE otto_app`, set no `app.org_id`,
   attempt `INSERT INTO tracker_deliveries (org_id, provider, digest) VALUES ($1, 'github',
   decode(repeat('cd', 32), 'hex'))` for A; assert it is an error; roll back. In a second unpinned
-  `otto_app` transaction, `DELETE FROM tracker_deliveries` with no predicate; assert
-  `rows_affected() == 2`; roll back. Also assert, from `pg_policy` joined to `pg_class` for
+  `otto_app` transaction, `DELETE FROM tracker_deliveries WHERE received_at <= now()`; assert
+  `rows_affected() == 2`; roll back. Keep the predicate: a `DELETE` with no `WHERE` is not bound by
+  the `SELECT` policy, so it would not pin that policy's `IS NULL` branch. Also assert, from `pg_policy` joined to `pg_class` for
   `tracker_deliveries`, that `(polname, polcmd)` is exactly
   `{(tracker_deliveries_insert, a), (tracker_deliveries_sweep, d),
   (tracker_deliveries_tenant_isolation, r)}`. Read `polcmd` as `polcmd::text`.
@@ -157,6 +158,10 @@ bodies whose action does not fit their event.
 
 **Files:** `CLAUDE.md`, the spec (JIRA decision is already §4).
 
+- [ ] File the JIRA follow-up (spec §4): `gh issue create --repo savvagent/otto-factory --label
+  enhancement --title "Move JIRA tracker webhooks to a body-signed transport" --body-file <file>`
+  (body: why the shared secret cannot support replay protection, what a signed transport enables,
+  link to spec §4 and #273). Write its number into spec §4.
 - [ ] In `CLAUDE.md`'s tenant-isolation section, change the sentence naming `tracker_deliveries`
   among the two-branch policies: its `SELECT` and `DELETE` policies have the two branches; its
   `INSERT` is pinned-only (`0011_tracker_deliveries_pinned_insert.sql`), since no org-less code

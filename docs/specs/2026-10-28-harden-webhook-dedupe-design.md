@@ -116,7 +116,9 @@ CREATE POLICY tracker_deliveries_sweep ON tracker_deliveries
 `rls_scopes_tracker_deliveries_to_the_pinned_org`):
 `rls_scopes_an_unpinned_tracker_delivery_insert_to_nothing`, an unpinned transaction with
 `SET LOCAL ROLE otto_app` and no `app.org_id`: an `INSERT` for some org fails, while in a second
-such transaction a `DELETE` with no predicate removes the existing rows of two orgs (the
+such transaction `DELETE … WHERE received_at <= now()` removes the existing rows of two orgs. The
+predicate matters: a `DELETE` with no `WHERE` reads no rows and so is not bound by the `SELECT`
+policy, and would pass even if that policy lost its `IS NULL` branch (the
 `the_sweep_reaches_every_org_where_rls_applies` test still covers `sweep` itself). The existing
 pinned test keeps proving a pinned insert for another org fails. A catalog assertion pins the shape:
 `pg_policy` holds exactly the three policies above with commands `r`, `a`, `d`.
@@ -189,7 +191,9 @@ logged. A GitHub redelivery and a replay look alike in what is signed; the origi
 operator compares against GitHub's delivery log.
 
 **Tests:** `of-core` tests assert `Repeat { received_at: Some(t) }` with `t` the first row's time;
-the existing bool-shaped tests move to `matches!`. The log line itself is not asserted (no log
+the existing bool-shaped tests move to `matches!`, and the `record` call in
+`crates/of-core/tests/platform_events.rs` (`populate`) compiles against the new type unchanged (it
+only `unwrap`s). The log line itself is not asserted (no log
 capture harness in this repo); the `of-web` HTTP repeat test still asserts `200` and no effect.
 
 ## §4 JIRA replay: decided against, for now
@@ -212,7 +216,7 @@ signature over the body. Whoever holds the secret can send any body, so:
 What would actually close it is moving JIRA to a transport that signs the body (Jira Cloud's
 admin-registered webhooks can carry an HMAC signature over the body), which would let the GitHub
 digest dedupe apply unchanged. That is a provider-setup change with its own console and docs work, so it is not
-done here. It should be its own issue: savvagent/otto-factory#273's close-out comment files it.
+done here. It is filed as its own issue before this PR opens (plan Task 4), and the PR names it.
 
 ## Assumptions
 
@@ -240,6 +244,11 @@ done here. It should be its own issue: savvagent/otto-factory#273's close-out co
 
 - **GitHub adds an action to both events** (as `edited`/`deleted` are): until the lists are
   updated it is ignored under both, which loses nothing applied today.
+- **GitHub extends one event with an action already in the other's list** (say `pinned` for
+  `issue_comment`): until the lists are updated, rule 2 rejects that genuine delivery with `404`
+  and GitHub shows it as failed. Nothing applied today is lost (the structural checks still separate
+  the bodies, and `inbound_decision` acts on no such comment action), so the cost is a noisy
+  delivery log until the lists catch up; the rejection's `warn` line names the action.
 - **A previously-applied comment action that is not in the list** would now be ignored. All three
   documented comment actions are in it, so none is lost.
 - **JIRA signed webhooks** are deferred to a follow-up issue (§4).
