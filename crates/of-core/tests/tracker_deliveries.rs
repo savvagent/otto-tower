@@ -1,9 +1,11 @@
 //! Tracker webhook deliveries: repeat detection, per-org keys, and isolation.
 //!
-//! `tracker_deliveries` is a tenant table whose policy lets an *unpinned*
-//! statement reach every org's rows (the retention sweep has no org). So both
-//! sides need proving: a pinned transaction sees and touches only its own org's
-//! rows, and the org-less sweep reaches every org's where RLS applies.
+//! `tracker_deliveries` is a tenant table whose `SELECT` and `DELETE` policies
+//! let an *unpinned* statement reach every org's rows (the retention sweep has
+//! no org), while its `INSERT` policy admits a row only for the pinned org. So
+//! every side needs proving: a pinned transaction sees and touches only its own
+//! org's rows, an unpinned insert is refused, and the org-less sweep reaches
+//! every org's where RLS applies.
 
 mod common;
 
@@ -153,4 +155,86 @@ async fn the_sweep_reaches_every_org_where_rls_applies(pool: PgPool) {
     assert_eq!(count_all(&pool).await, 1, "the fresh delivery was kept");
     // A swept delivery is no longer a repeat.
     assert!(record_one(&db, b, Some("old-b"), [2; 32]).await);
+}
+
+/// Only the org-less sweep needs the `IS NULL` branch, and it never inserts: an
+/// unpinned insert, which no code path makes, is refused rather than admitted
+/// for any org. The unpinned `DELETE` keeps its `WHERE` on purpose: a DELETE
+/// with no `WHERE` reads no rows, so the `SELECT` policy would not bind it and
+/// the assertion would not pin that policy's `IS NULL` branch.
+#[sqlx::test]
+async fn rls_scopes_an_unpinned_tracker_delivery_insert_to_nothing(pool: PgPool) {
+    let db = db(pool.clone());
+    let (a, b) = (OrgId::new(), OrgId::new());
+    record_one(&db, a, Some("a"), [1; 32]).await;
+    record_one(&db, b, Some("b"), [2; 32]).await;
+
+    let mut tx = db.begin_unpinned().await.unwrap();
+    sqlx::query("SET LOCAL ROLE otto_app")
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    let forged = sqlx::query(
+        "INSERT INTO tracker_deliveries (org_id, provider, digest) \
+         VALUES ($1, 'github', decode(repeat('cd', 32), 'hex'))",
+    )
+    .bind(a)
+    .execute(tx.conn())
+    .await;
+    assert!(forged.is_err(), "an unpinned insert recorded a delivery");
+    tx.rollback().await.unwrap();
+
+    let mut tx = db.begin_unpinned().await.unwrap();
+    sqlx::query("SET LOCAL ROLE otto_app")
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    let swept = sqlx::query("DELETE FROM tracker_deliveries WHERE received_at <= now()")
+        .execute(tx.conn())
+        .await
+        .unwrap()
+        .rows_affected();
+    tx.rollback().await.unwrap();
+    assert_eq!(swept, 2, "an unpinned delete must reach every org's rows");
+
+    let mut policies: Vec<(String, String)> = sqlx::query_as(
+        "SELECT p.polname::text, p.polcmd::text FROM pg_policy p \
+         JOIN pg_class c ON c.oid = p.polrelid \
+         WHERE c.relname = 'tracker_deliveries'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    policies.sort();
+    assert_eq!(
+        policies,
+        vec![
+            ("tracker_deliveries_insert".to_owned(), "a".to_owned()),
+            ("tracker_deliveries_sweep".to_owned(), "d".to_owned()),
+            (
+                "tracker_deliveries_tenant_isolation".to_owned(),
+                "r".to_owned()
+            ),
+        ]
+    );
+}
+
+/// `verify_tenant_isolation` discovers tenant tables by a policy named
+/// `<table>_tenant_isolation`; splitting the policy by command must keep that
+/// name on one of them, or the startup check silently stops vouching for it.
+#[sqlx::test]
+async fn the_startup_check_still_vouches_for_tracker_deliveries(pool: PgPool) {
+    let db = db(pool);
+    let report = db.verify_tenant_isolation().await.unwrap();
+    let table = report
+        .tables
+        .iter()
+        .find(|t| t.name == "tracker_deliveries")
+        .unwrap_or_else(|| {
+            panic!(
+                "tracker_deliveries missing from {:?}",
+                report.tables.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        });
+    assert!(table.rls_forced);
 }
