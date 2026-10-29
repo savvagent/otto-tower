@@ -18,11 +18,11 @@ use sqlx::PgPool;
 
 async fn record_one(db: &Db, org: OrgId, id: Option<&str>, digest: [u8; 32]) -> Recorded {
     let mut tx = db.begin(org).await.unwrap();
-    let first = record(&mut tx, Provider::Github, id, &digest)
+    let recorded = record(&mut tx, Provider::Github, id, &digest)
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    first
+    recorded
 }
 
 async fn count_all(pool: &PgPool) -> i64 {
@@ -108,6 +108,32 @@ async fn a_repeat_reports_when_the_original_was_received(pool: PgPool) {
         record_one(&db, org, Some("a"), [5; 32]).await,
         Recorded::Repeat {
             received_at: Some(stored)
+        }
+    );
+}
+
+/// A repeat's original time is its own org's: org B, recording a body org A
+/// recorded earlier, is told B's own time, never A's.
+#[sqlx::test]
+async fn a_repeat_reports_only_its_own_orgs_original(pool: PgPool) {
+    let db = db(pool.clone());
+    let (a, b) = (OrgId::new(), OrgId::new());
+    record_one(&db, a, None, [6; 32]).await;
+    sqlx::query("UPDATE tracker_deliveries SET received_at = now() - interval '5 days'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    record_one(&db, b, None, [6; 32]).await;
+    let b_stored: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT received_at FROM tracker_deliveries WHERE org_id = $1")
+            .bind(b)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        record_one(&db, b, None, [6; 32]).await,
+        Recorded::Repeat {
+            received_at: Some(b_stored)
         }
     );
 }
