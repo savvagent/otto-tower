@@ -1431,8 +1431,8 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "otto-resource"
-version = "0.10.0"
-source = "git+https://github.com/savvagent/otto-platform?rev=bfda55e155be8985761850a7c42980cc926fd4cb#bfda55e155be8985761850a7c42980cc926fd4cb"
+version = "0.14.0"
+source = "git+https://github.com/savvagent/otto-platform?rev=03f52e9f2139d08d60d0695b5cde4834f0cf19c2#03f52e9f2139d08d60d0695b5cde4834f0cf19c2"
 dependencies = [
  "chrono",
  "hex",
