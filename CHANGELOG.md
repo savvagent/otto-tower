@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.16.0](https://github.com/savvagent/otto-tower/compare/v0.15.0...v0.16.0) (2026-10-30)
+
+
+### Features
+
+* **of-mcp:** address jobs by their issue, and flag drift from it ([#260](https://github.com/savvagent/otto-tower/issues/260)) ([5449924](https://github.com/savvagent/otto-tower/commit/5449924d22ab4ec6a2fcb1b24d75deb79364185c))
+
+
+### Bug Fixes
+
+* **of-core:** clear ticket_changed_at when link_ticket changes the ticket ([#267](https://github.com/savvagent/otto-tower/issues/267)) ([dbf9a38](https://github.com/savvagent/otto-tower/commit/dbf9a38690a49ce8f98a5951a4fb1ff74f898262))
+* **of-trackers:** guard comment webhooks by ticket_changed_at ([#263](https://github.com/savvagent/otto-tower/issues/263)) ([77dc932](https://github.com/savvagent/otto-tower/commit/77dc932f83db51d74e03f634a6f1847ae07b934c))
+* **of-web:** deduplicate GitHub webhook deliveries ([#268](https://github.com/savvagent/otto-tower/issues/268)) ([bb7c0b3](https://github.com/savvagent/otto-tower/commit/bb7c0b387c88e727d2a1035ecf578569412569fa))
+* **of-web:** harden tracker webhook dedupe ([#276](https://github.com/savvagent/otto-tower/issues/276)) ([641cc4d](https://github.com/savvagent/otto-tower/commit/641cc4df336932a576189f178cc4b6958bf5150c))
+* **of-web:** redact remote_taken for team-limited callers on repo writes ([#269](https://github.com/savvagent/otto-tower/issues/269)) ([bd2d222](https://github.com/savvagent/otto-tower/commit/bd2d222ae581e654ee800d332c971a5703fc5d26))
+
 ## [0.15.0](https://github.com/savvagent/otto-tower/compare/v0.14.1...v0.15.0) (2026-10-24)
 
 
