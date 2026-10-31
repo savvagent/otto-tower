@@ -1,4 +1,4 @@
-//! An in-process stand-in for the otto platform's resource-server API.
+//! An in-process stand-in for the Savvagent platform's resource-server API.
 //!
 //! Integration tests that exercise introspection, the internal lookups, usage
 //! shipping, or the lifecycle webhooks run against [`MockPlatform`], a real HTTP

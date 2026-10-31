@@ -4,12 +4,12 @@ Guidance for Claude Code working in this repository.
 
 ## What this is
 
-**otto-tower** is a hosted, multi-tenant MCP server for coordinating agentic coding work
+**Savvagent Tower** is a hosted, multi-tenant MCP server for coordinating agentic coding work
 across enterprises and teams. Server-only — no TUI, no PTY, no local binary, no plugin.
 
-It is a **resource server of the otto platform** (`savvagent/otto-platform`). The platform
+It is a **resource server of the Savvagent platform** (`savvagent/otto-platform`). The platform
 is the OAuth authorization server and the system of record for identity (accounts, orgs,
-teams, members), SSO, and billing; otto-tower holds only the coordination domain, in its
+teams, members), SSO, and billing; Savvagent Tower holds only the coordination domain, in its
 own database, and asks the platform who a token belongs to. Nothing in this repository
 issues a token, signs anyone in, or stores who a person is.
 
@@ -17,15 +17,33 @@ Read [`docs/specs/2026-09-01-otto-factory-design.md`](docs/specs/2026-09-01-otto
 before any non-trivial change. The build order is in
 [`docs/plans/2026-09-01-milestone-1.md`](docs/plans/2026-09-01-milestone-1.md).
 
-## Naming: otto-tower, and the identifiers that keep the old name
+## Naming: Savvagent Tower, and the identifiers that keep the old name
 
-The product was renamed from otto-factory to **otto-tower** (epic `savvagent/otto-platform#81`;
-design of record `docs/specs/2026-10-21-otto-tower-rename-design.md` in otto-platform). Everything a
-person or agent reads says otto-tower: the MCP server name (`mcp__otto-tower__*`), the canonical
-endpoint `https://otto-tower.savvagent.com/mcp`, the console, the docs, the skills and the meter
-(`otto-tower/jobs_completed`). `git grep -i otto-factory` is expected to find only these deliberately
-kept identifiers, and a new hit outside the list is a bug:
+The product was renamed from otto-factory to otto-tower (epic `savvagent/otto-platform#81`), and then
+rebranded to **Savvagent Tower** (epic `savvagent/otto-platform#128`, phase 3 is
+`savvagent/otto-tower#279`). Everything a person or agent reads says Savvagent Tower: the MCP server
+name (`savvagent-tower`, so tools are `mcp__savvagent-tower__*`), the canonical endpoint
+`https://tower.savvagent.com/mcp`, the platform at `https://savvagent.com`, the console, the docs and
+the client skills. The identifiers below keep their old names until phase 4 (`savvagent/otto-tower#280`)
+renames the internals, and a new hit of `otto-tower` or `otto-factory` outside this list is a bug
+(`git grep -i -e otto-tower -e otto-factory` shows what is left):
 
+- `otto-tower` where it is an identifier rather than a name people read: the billing service slug and the
+  meter `otto-tower/jobs_completed` (`of_billing::METER_JOBS_COMPLETED`, never renamed by the rebrand);
+  the tracker trigger label default `otto-tower` (stored on bindings, so also in the tests that assert
+  it); the GitHub App slug `otto-tower` (`github.com/apps/otto-tower`, in a test); the `otto-tower/`
+  User-Agent of the GitHub and JIRA clients; the container image tag (`podman build -t otto-tower .`);
+  the `otto-tower-console` npm package name; the skill directories and names `otto-tower-development`,
+  `otto-tower-scanner` and `otto-tower-worker` (and the `otto-tower-worker:trio-cleared:` marker); the
+  `otto-tower-release` GitHub App named in `ci.yml`; the `.test` hostnames in the test constants; the
+  `savvagent/otto-tower` repo slug; and the platform's own repo `savvagent/otto-platform`.
+- The old host `otto-tower.savvagent.com`, a live alias at the platform until 2027-06-30: in
+  `OF_ALLOWED_HOSTS` in `fly.toml` and in the move-to-`tower.savvagent.com` runbook in
+  `docs/deploy/fly.md`.
+- The legacy file names `~/.claude/otto-tower-repos` and `~/.claude/otto-factory-repos`, still read as
+  fallbacks (in that order, after `savvagent-tower-repos`) by
+  `client-skills/claude-code/session-start-hook.sh` and documented in `client-skills/claude-code/README.md`.
+- `claude mcp remove otto-tower`, which names what existing users registered the server as.
 - The `of-*` crates, the `OF_*` env vars (including `OF_LEGACY_HOSTS` / `OF_LEGACY_SUNSET`), the
   `otto_factory` database and the `factory` Postgres role.
 - The Fly app `otto-factory-mcp` and its `fly.dev` host.
@@ -38,11 +56,9 @@ kept identifiers, and a new hit outside the list is a bug:
 - The Cloudflare Worker script names (`otto-factory-console`, `otto-factory-console-dev`).
 - `CHANGELOG.md`, and the dated historical `docs/specs/*` and `docs/plans/*` (including the design
   of record's filename `2026-09-01-otto-factory-design.md`, which links depend on).
-- The legacy host `otto-factory.savvagent.com` where it appears as deprecation config or in the
-  cutover runbook (`docs/deploy/fly.md`). It is the legacy/deprecation path only; user-facing
-  docs and `ci.yml`'s `environment.url` link to `otto-tower.savvagent.com`.
-- The legacy file name `~/.claude/otto-factory-repos`, still read as a fallback by
-  `client-skills/claude-code/session-start-hook.sh` and documented in `client-skills/claude-code/README.md`.
+- The retired host `otto-factory.savvagent.com` in the historical cutover runbook
+  (`docs/deploy/fly.md`) and in the `OF_LEGACY_HOSTS` support in `of-server`, whose env values are no
+  longer set. User-facing docs and `ci.yml`'s `environment.url` link to `tower.savvagent.com`.
 - Historical session records in `client-skills/claude-code/README.md` (the verification notes keep the
   repo slug and idempotency-key examples they were recorded with).
 - The `factory-scanner:` key prefix, still recognised for back-compat.
@@ -72,7 +88,7 @@ These decide scope disputes. When a change conflicts with one of them, the chang
    unresolvable repo is an error naming the registered slugs, never a silent fallback.
    (Messages go to a repo's channel or a team's; a team channel carries a team's coordination
    across repos and is not a precedent for a job or lease without a repo.)
-2. **Substrate, not workflow.** otto-tower ships no opinion about how work is specified,
+2. **Substrate, not workflow.** Savvagent Tower ships no opinion about how work is specified,
    planned, reviewed, or measured. If a capability could live either in the server or in a
    customer's own skill calling the server, **it belongs in the skill**. Jobs carry an
    opaque `metadata` JSONB field for exactly this reason — the server never interprets it.
@@ -350,7 +366,7 @@ members, invites, teams, SSO, tokens, or usage. Those are the platform's, and
   deletes the session (`401`); a platform that cannot answer is `503` and the session is
   untouched.
 - **Cookie-authenticated writes are CSRF-checked; bearer requests are exempt.** SameSite does
-  not cover same-site siblings (`otto.savvagent.com` and `otto-tower.savvagent.com`), so a
+  not cover same-site siblings (`savvagent.com` and `tower.savvagent.com`), so a
   non-safe request carrying the session cookie and no bearer must have `Origin` equal to
   `OF_PUBLIC_URL`'s origin (else `Sec-Fetch-Site: same-origin`, else a same-origin `Referer`),
   or it is `403 cross_site_request` (`csrf.rs`, a port of the platform's). `/auth/logout` is
@@ -705,7 +721,7 @@ rules hold, and the first is what makes the others true:
 
 ## Releases & versioning
 
-otto-tower is one product — a single deployed binary plus the console it serves — not a set of
+Savvagent Tower is one product — a single deployed binary plus the console it serves — not a set of
 independently published crates, so it carries one SemVer version, not seven. The workspace's
 `[workspace.package] version` (every crate inherits it via `version.workspace = true`) and
 `web/package.json`'s `version` move together.

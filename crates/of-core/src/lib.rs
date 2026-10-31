@@ -1,4 +1,4 @@
-//! `of-core` — the otto-tower domain: repos, jobs, leases, messages, trackers.
+//! `of-core` — the Savvagent Tower domain: repos, jobs, leases, messages, trackers.
 //!
 //! Identity, tenancy, auth, and plan usage are not here. They live in the otto
 //! platform, in another database, reached over HTTP (`otto-resource`); this

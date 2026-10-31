@@ -1,8 +1,8 @@
 //! The cross-site request guard for cookie-authenticated writes.
 //!
 //! `SameSite=Lax` keeps the session cookie off cross-*site* POSTs, but says
-//! nothing about same-site siblings: `otto.savvagent.com` (the platform) and
-//! `otto-tower.savvagent.com` (this service) are the same site, as is every
+//! nothing about same-site siblings: `savvagent.com` (the platform) and
+//! `tower.savvagent.com` (this service) are the same site, as is every
 //! other `*.savvagent.com` host, so a script on any of them can submit a request
 //! here with the victim's cookie attached. `__Host-` stops a sibling *setting*
 //! our cookie; it does not stop one *using* it.

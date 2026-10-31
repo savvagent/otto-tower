@@ -1,4 +1,4 @@
-//! The otto platform's lifecycle webhooks.
+//! The Savvagent platform's lifecycle webhooks.
 //!
 //! The platform owns orgs, teams, and memberships and tells every registered
 //! resource server when it deletes one (`org.deleted`, `team.deleted`,

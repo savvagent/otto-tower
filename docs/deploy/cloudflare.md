@@ -1,4 +1,4 @@
-# The otto-tower console on Cloudflare
+# The Savvagent Tower console on Cloudflare
 
 Closes the question in [issue #2](https://github.com/savvagent/otto-factory/issues/2):
 how to put `web/` on Cloudflare without giving up the single origin the session cookie
@@ -9,10 +9,10 @@ browser sees one hostname. `web/wrangler.jsonc` and `web/worker/index.ts` are th
 it; this file is the account-side setup neither of them can express, and the two traps that
 a first deploy hits.
 
-The product is **otto-tower** (renamed from otto-factory). The Worker scripts keep their
+The product is **Savvagent Tower** (renamed from otto-factory). The Worker scripts keep their
 old names, `otto-factory-console` and `otto-factory-console-dev`, because a Worker script name
 is an identity in the Cloudflare account; the Fly origin keeps `otto-factory-mcp.fly.dev`. The
-public hostname moves to `otto-tower.savvagent.com` in the operator cutover described below.
+public hostname moves to `tower.savvagent.com` in the operator cutover described below.
 
 Self-hosted deployments are unaffected. `of-server` still serves `web/build` itself, the
 `Dockerfile` still bakes it in at `/srv/console`, and nothing in this document is required
@@ -61,7 +61,7 @@ Then attach the hostname the humans will use (`console.example.com`) to the Work
 custom domain. That hostname — not the origin's — is the public origin, and every value
 below follows from that.
 
-## The otto-tower hostname and the legacy host
+## The Savvagent Tower hostname and the legacy host
 
 **Production is not fronted by this Worker today.** `otto-factory.savvagent.com` resolves straight
 to the Fly app (DNS at Namecheap, no Cloudflare in front), and the rename cutover there is a Fly
@@ -80,7 +80,7 @@ redirected.
 For a Worker-fronted deployment, the production Worker serves both hostnames during the
 deprecation window: the canonical one and the legacy one (until the published sunset).
 
-1. Add the canonical hostname (`otto-tower.savvagent.com` for this product) as a **custom domain**
+1. Add the canonical hostname (`tower.savvagent.com` for this product) as a **custom domain**
    on the production Worker (in the dashboard, or a `routes` entry with `custom_domain: true` in
    `wrangler.jsonc`), alongside the existing one, in place of the Fly certificate and DNS records
    of runbook step 5. Do not remove the old custom domain: it must keep serving until the sunset.
@@ -120,7 +120,7 @@ Two environment variables on `of-server`, and neither is optional.
 | `OF_PUBLIC_URL` | `https://console.example.com` | The Worker's hostname, never the origin's. The discovery pointer in a `401` and the tracker OAuth callbacks are built from it. Point it at the origin and the console tells agents to connect to a host the browser never uses. |
 | `OF_ALLOWED_HOSTS` | the origin's hostname, e.g. `otto-factory-mcp.fly.dev` | **See the trap below.** Without it every authenticated MCP call fails. |
 
-`OF_RESOURCE_URI` defaults to `$OF_PUBLIC_URL/mcp` and needs nothing here (it must still be the URI registered at the otto platform). Sign-in itself is the platform's and is not proxied through this Worker.
+`OF_RESOURCE_URI` defaults to `$OF_PUBLIC_URL/mcp` and needs nothing here (it must still be the URI registered at the Savvagent platform). Sign-in itself is the platform's and is not proxied through this Worker.
 
 ### Trap 1 — `OF_ALLOWED_HOSTS`, or the MCP endpoint refuses every call
 

@@ -9,7 +9,7 @@
  *
  * **The session is never touched by script.** It is an `HttpOnly`,
  * `__Host-`-prefixed cookie that `of-web` sets when the sign-in through the
- * otto platform finishes (`/auth/login` → `/auth/callback`), so there is no token
+ * Savvagent platform finishes (`/auth/login` → `/auth/callback`), so there is no token
  * to attach and nothing to store. Requests are same-origin and the browser sends
  * it; `credentials` is left at its default for exactly that reason, and a change
  * to `'include'` would be a sign someone has moved the API to another origin,

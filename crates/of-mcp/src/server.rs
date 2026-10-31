@@ -55,7 +55,7 @@ use crate::legacy::Legacy;
 /// first session are naming the repo, claiming without checking `ready`, and
 /// polling instead of waiting.
 const INSTRUCTIONS: &str = "\
-otto-tower coordinates agentic coding work across a team. Everything here is \
+Savvagent Tower coordinates agentic coding work across a team. Everything here is \
 anchored on repositories: a job belongs to a repo, a lease is taken on a resource \
 within a repo — a branch (spelled `branch:<name>`, e.g. `branch:main`), or anything \
 else your team needs to serialize on, such as a staging slot or a migration lock — \
@@ -85,7 +85,7 @@ Jobs carry a free-form `metadata` object that this server never reads or \
 interprets. Put whatever your own workflow needs in it.
 
 Coordination calls are free. Each completed job is billed on the \
-organization's otto-tower meter, including one completed by closing its \
+organization's Savvagent Tower meter, including one completed by closing its \
 linked ticket. Call usage to see this month's completed \
 jobs, the budget and any block.";
 
@@ -140,7 +140,7 @@ impl Factory {
         &self.db
     }
 
-    /// The otto platform: identity lookups (members, teams) and billing.
+    /// The Savvagent platform: identity lookups (members, teams) and billing.
     pub fn platform(&self) -> &Arc<PlatformClient> {
         &self.platform
     }
@@ -305,8 +305,8 @@ impl ServerHandler for Factory {
         // Left unset, this defaults to `Implementation::from_build_env()`,
         // which expands `CARGO_CRATE_NAME`/`CARGO_PKG_VERSION` in `rmcp`'s
         // own build context — every client would see "rmcp" 2.0.0 at
-        // `initialize`, not otto-tower.
-        info.server_info = Implementation::new("otto-tower", env!("CARGO_PKG_VERSION"));
+        // `initialize`, not Savvagent Tower.
+        info.server_info = Implementation::new("savvagent-tower", env!("CARGO_PKG_VERSION"));
         info.instructions = Some(INSTRUCTIONS.to_string());
         info
     }

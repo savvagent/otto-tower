@@ -1,13 +1,13 @@
 //! `of-web` — the console API.
 //!
-//! Everything a human's browser asks of otto-tower *about its own domain*:
+//! Everything a human's browser asks of Savvagent Tower *about its own domain*:
 //! repos, the queue, tracker connections, and this service's audit trail. Plus
 //! two machine endpoints, both authenticated by signature rather than by token:
-//! tracker webhooks (`/webhooks/{provider}`) and the otto platform's lifecycle
+//! tracker webhooks (`/webhooks/{provider}`) and the Savvagent platform's lifecycle
 //! webhooks (`/platform/webhooks`).
 //!
 //! Identity is not here. Accounts, orgs, members, teams, SSO, tokens, and the
-//! usage meter live in the otto platform, which is also the OAuth authorization
+//! usage meter live in the Savvagent platform, which is also the OAuth authorization
 //! server for the MCP surface and for the console's own sign-in. This crate is a
 //! *resource server* and an OAuth *client*: it asks the platform who a token
 //! belongs to, and it holds the session a console login leaves behind. That is

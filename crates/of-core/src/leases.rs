@@ -1,6 +1,6 @@
 //! Repo leases — the primitive that stops two agents colliding on one resource.
 //!
-//! A lease is **advisory and time-bounded**. otto-tower cannot see what an
+//! A lease is **advisory and time-bounded**. Savvagent Tower cannot see what an
 //! agent actually does with a leased resource — a git operation, a migration
 //! run, a deploy — so it cannot prevent a determined agent from working on one
 //! anyway; what it can do is make the collision visible before it happens and

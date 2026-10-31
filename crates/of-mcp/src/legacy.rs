@@ -1,7 +1,7 @@
 //! Hosts this deployment still answers on but no longer wants to be called by.
 //!
 //! When the product moved from `otto-factory.savvagent.com` to
-//! `otto-tower.savvagent.com`, the old URL had to keep working until a published
+//! `tower.savvagent.com`, the old URL had to keep working until a published
 //! sunset date, and every response through it had to say so. This module is the
 //! whole of that: it decides whether a request arrived through a deprecated
 //! host, stamps the response with the notice, and hands the rest of the MCP
@@ -208,7 +208,7 @@ impl Legacy {
                 .to_string(),
         };
         format!(
-            "DEPRECATED ADDRESS. You reached otto-tower through {old}, its old address. \
+            "DEPRECATED ADDRESS. You reached Savvagent Tower through {old}, its old address. \
              {when} Change this MCP server's URL in your client configuration to {new} \
              and sign in again if your client asks; your jobs, repos and leases are the \
              same on both addresses. Tell the person you are working for, because \

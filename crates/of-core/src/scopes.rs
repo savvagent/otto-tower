@@ -1,11 +1,11 @@
-//! The scopes otto-tower's resource server understands.
+//! The scopes Savvagent Tower's resource server understands.
 //!
 //! Scope strings are only meaningful within one resource server. The otto
 //! platform (the authorization server) validates every authorize, code
 //! redemption, refresh, and PAT against the scope list registered for this
 //! resource, and this service checks them again in every tool. The registration
 //! is an operator step (`otto-platform-server resource register --scopes …`,
-//! see docs/deploy/fly.md); this module is the single place otto-tower says
+//! see docs/deploy/fly.md); this module is the single place Savvagent Tower says
 //! what it understands, so the registration, the advertised metadata
 //! (`/.well-known/oauth-protected-resource`), and the tools' own scope checks
 //! cannot drift apart. The `scopes_supported` document is generated from
@@ -16,7 +16,7 @@
 //! which fails later and confusingly.
 
 /// What this resource server is called on a consent screen and in its metadata.
-pub const RESOURCE_NAME: &str = "otto-tower";
+pub const RESOURCE_NAME: &str = "Savvagent Tower";
 
 pub const JOBS_READ: &str = "jobs:read";
 pub const JOBS_WRITE: &str = "jobs:write";

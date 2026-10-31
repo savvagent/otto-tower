@@ -24,7 +24,7 @@ of-trackers = { path = "crates/of-trackers" }
 of-web = { path = "crates/of-web" }
 of-testkit = { path = "crates/of-testkit" }
 
-# otto-tower is a resource server of the otto platform (savvagent/otto-factory#192):
+# Savvagent Tower is a resource server of the Savvagent platform (savvagent/otto-factory#192):
 # identity, auth, orgs, teams, plans, and billing live there. This repo links only the
 # tenant-isolation substrate (`otto-tenant`: pinned transactions, RLS proof, Cipher, the
 # audit-trail pattern) and the resource-server client (`otto-resource`: introspection,

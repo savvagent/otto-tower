@@ -19,7 +19,7 @@
 //! and such a request for the console (or `/auth/login`) is `308`-redirected
 //! to the same path on `OF_PUBLIC_URL` instead of being served.
 //!
-//! otto-tower is a resource server of the otto platform, which is the OAuth
+//! Savvagent Tower is a resource server of the Savvagent platform, which is the OAuth
 //! authorization server and the system of record for identity and billing. There
 //! is no `/oauth/*` or account surface here; the console signs in *through* the
 //! platform (`/auth/*`, an OAuth client), and both HTTP surfaces validate the
@@ -122,7 +122,7 @@ async fn legacy_console_redirect(req: Request<Body>, next: Next) -> Response {
     }
 }
 
-/// The client every call to the otto platform goes through.
+/// The client every call to the Savvagent platform goes through.
 ///
 /// Built once and shared: it holds the introspection and usage-status caches,
 /// so a second client would be a second, colder cache. Fallible because the
@@ -319,7 +319,7 @@ fn not_found(path: &str) -> Response {
             "error_description":
                 format!("no route serves {path}. See /api/openapi.json for the console API, \
                          and /.well-known/oauth-protected-resource for the MCP endpoint and the \
-                         authorization server (the otto platform) that issues its tokens."),
+                         authorization server (the Savvagent platform) that issues its tokens."),
         })),
     )
         .into_response()
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(mcp.encryption_key.as_deref(), Some("k"));
     }
 
-    /// The console's "Back to otto" link reads the platform's address from
+    /// The console's "Back to Savvagent" link reads the platform's address from
     /// `/api/session` (`of-web`'s `platform_url`) when signed in, and from the
     /// discovery document's `authorization_servers` (`of-mcp`'s `platform_url`,
     /// handed to `ResourceServer` in `of_mcp::router`) when not. A signed-out

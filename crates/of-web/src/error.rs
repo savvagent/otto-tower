@@ -53,7 +53,7 @@ impl ApiError {
         Self::new(
             StatusCode::UNAUTHORIZED,
             "unauthenticated",
-            "sign in to continue: this needs a console session or a valid otto platform access token",
+            "sign in to continue: this needs a console session or a valid Savvagent platform access token",
         )
     }
 
@@ -130,11 +130,11 @@ impl ApiError {
     /// to sign in again against the very thing that is down. The detail is
     /// logged, never sent.
     pub fn platform_unavailable(context: &str, e: impl std::fmt::Display) -> Self {
-        tracing::error!(error = %e, context, "the otto platform could not answer");
+        tracing::error!(error = %e, context, "the Savvagent platform could not answer");
         let mut api = Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "platform_unavailable",
-            "the otto platform could not be reached to check this; retry shortly",
+            "the Savvagent platform could not be reached to check this; retry shortly",
         );
         api.retry_after = Some(5);
         api

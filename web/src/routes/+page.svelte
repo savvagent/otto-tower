@@ -8,7 +8,7 @@
   import Loading from '$lib/components/Loading.svelte';
 
   /**
-   * `/` is otto-tower's public front page.
+   * `/` is Savvagent Tower's public front page.
    *
    * A signed-out visitor reads it — per `+layout.svelte`'s `UNGATED` list, it
    * is the one page a stranger can reach without a session. A signed-in
@@ -152,7 +152,7 @@
           <!-- A wire value, not prose — never translated, same as the rest of this console's commands and paths. -->
           <code
             class="of-mono mt-3 block overflow-x-auto rounded-md border border-edge bg-canvas px-3 py-2 text-xs whitespace-pre"
-            >claude mcp add --transport http otto-tower https://mcp.your-domain.com/mcp</code
+            >claude mcp add --transport http savvagent-tower https://mcp.your-domain.com/mcp</code
           >
         </li>
         <li class="of-card p-5">
