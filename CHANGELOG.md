@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.19.0](https://github.com/savvagent/otto-tower/compare/v0.18.0...v0.19.0) (2026-10-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* rename the crates to tower-* ([#280](https://github.com/savvagent/otto-tower/issues/280)) (#288)
+
+### Code Refactoring
+
+* rename the crates to tower-* ([#280](https://github.com/savvagent/otto-tower/issues/280)) ([#288](https://github.com/savvagent/otto-tower/issues/288)) ([60841f0](https://github.com/savvagent/otto-tower/commit/60841f00633b676d2c24baf449edd05558319135))
+
 ## [0.18.0](https://github.com/savvagent/otto-tower/compare/v0.17.0...v0.18.0) (2026-10-31)
 
 
