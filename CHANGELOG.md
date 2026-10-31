@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/savvagent/otto-tower/compare/v0.16.0...v0.16.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* point the platform URL at savvagent.com ([#282](https://github.com/savvagent/otto-tower/issues/282)) ([70fc63d](https://github.com/savvagent/otto-tower/commit/70fc63df4c40c4f362a45bb2df1164d3b57c5e73))
+
 ## [0.16.0](https://github.com/savvagent/otto-tower/compare/v0.15.0...v0.16.0) (2026-10-30)
 
 
