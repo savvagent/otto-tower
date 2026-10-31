@@ -37,14 +37,16 @@ renames the internals, and a new hit of `otto-tower` or `otto-factory` outside t
   `otto-tower-scanner` and `otto-tower-worker` (and the `otto-tower-worker:trio-cleared:` marker); the
   `otto-tower-release` GitHub App named in `ci.yml`; the `.test` hostnames in the test constants; the
   `savvagent/otto-tower` repo slug; and the platform's own repo `savvagent/otto-platform`.
-- The old host `otto-tower.savvagent.com`, a live alias at the platform until 2027-06-30: in
-  `OF_ALLOWED_HOSTS` in `fly.toml` and in the move-to-`tower.savvagent.com` runbook in
-  `docs/deploy/fly.md`.
+- The old hosts `otto-tower.savvagent.com` and `otto-factory.savvagent.com`, which are redirect-only
+  (`savvagent/otto-platform#135`): in `OF_REDIRECT_HOSTS` in `fly.toml` (a `308` to the same path and
+  query on `tower.savvagent.com`, for every method and path) and in the runbooks in `docs/deploy/fly.md`.
+  Neither is in `OF_ALLOWED_HOSTS` any more.
 - The legacy file names `~/.claude/otto-tower-repos` and `~/.claude/otto-factory-repos`, still read as
   fallbacks (in that order, after `savvagent-tower-repos`) by
   `client-skills/claude-code/session-start-hook.sh` and documented in `client-skills/claude-code/README.md`.
 - `claude mcp remove otto-tower`, which names what existing users registered the server as.
-- The `of-*` crates, the `OF_*` env vars (including `OF_LEGACY_HOSTS` / `OF_LEGACY_SUNSET`), the
+- The `of-*` crates, the `OF_*` env vars (including `OF_REDIRECT_HOSTS` and `OF_LEGACY_HOSTS` /
+  `OF_LEGACY_SUNSET`), the
   `otto_factory` database and the `factory` Postgres role.
 - The Fly app `otto-factory-mcp` and its `fly.dev` host.
 - The Rust type `Factory`.
@@ -56,7 +58,7 @@ renames the internals, and a new hit of `otto-tower` or `otto-factory` outside t
 - The Cloudflare Worker script names (`otto-factory-console`, `otto-factory-console-dev`).
 - `CHANGELOG.md`, and the dated historical `docs/specs/*` and `docs/plans/*` (including the design
   of record's filename `2026-09-01-otto-factory-design.md`, which links depend on).
-- The retired host `otto-factory.savvagent.com` in the historical cutover runbook
+- The `otto-factory.savvagent.com` host in the historical cutover runbook
   (`docs/deploy/fly.md`) and in the `OF_LEGACY_HOSTS` support in `of-server`, whose env values are no
   longer set. User-facing docs and `ci.yml`'s `environment.url` link to `tower.savvagent.com`.
 - Historical session records in `client-skills/claude-code/README.md` (the verification notes keep the
@@ -613,6 +615,12 @@ means in this repository:
   expiry) and an inactive one for 5 s; failures are never cached.
 - **The audience is configuration, not the request.** `OF_RESOURCE_URI` is what the platform
   mints tokens for; it is never derived from a `Host` header, which an attacker controls.
+- **A redirect host is answered before anything else.** `OF_REDIRECT_HOSTS` names hosts that only
+  `308` to `OF_PUBLIC_URL` + the raw path and query, with an empty body, for every method and path
+  (webhooks and OAuth callbacks included; nothing is proxied). It is `of-server`'s outermost layer, so
+  allow-listing, auth and `mark` never see the request. It matches on `Host` (else the URI authority),
+  never `X-Forwarded-Host`, and the `Location` never takes a scheme or host from the request. A host
+  also in `OF_ALLOWED_HOSTS`/`OF_LEGACY_HOSTS`, or the public host, stops startup.
 - **A legacy host changes what is advertised, never what is accepted.** During a rename's
   deprecation window `OF_LEGACY_HOSTS` names the old host(s). `of_mcp::legacy::mark`, `of-server`'s
   outermost layer, reads the origin host (`X-Forwarded-Host`, which the Worker sets, else `Host`),

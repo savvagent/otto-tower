@@ -708,9 +708,8 @@ console links there. See the platform-split checklist for first-time setup and t
 ## The hostname
 
 The hostname below is the Savvagent Tower one. The move to it is the runbook at the end of this
-file; `otto-tower.savvagent.com` is the previous host, accepted through `OF_ALLOWED_HOSTS` and a live
-platform alias until 2027-06-30. `otto-factory.savvagent.com` is retired (its sunset passed and the
-platform alias is dropped; `OF_LEGACY_HOSTS` is no longer set).
+file. `otto-tower.savvagent.com` and `otto-factory.savvagent.com` are old hosts that only redirect
+to it (`OF_REDIRECT_HOSTS`; see "#135: old hosts redirect" at the end). `OF_LEGACY_HOSTS` is not set.
 
 The public hostname is **`tower.savvagent.com`**, and the app answers on
 `otto-factory-mcp.fly.dev` without advertising it. No Cloudflare Worker or proxy sits in front:
@@ -826,7 +825,7 @@ merging that release PR (CI deploys it). The deploy changes only `fly.toml` `[en
 | `OF_CONSOLE_CLIENT_ID` | `otto_client_8ClmY61CJPC5BJHULc1Kug15hbSvw0vAy6CxUuXMZUY` | `sav_client_XRACC-VcMXZQpX7jG_8Oplm9IQNTV-KrK6KdxJE-MCk` |
 
 `otto-tower.savvagent.com` stays an allowed `/mcp` host, so clients still configured with it keep
-working until the platform turns old hosts into redirects (savvagent/otto-platform#135). The
+working until the old hosts become redirects (savvagent/otto-platform#135, below). The
 `fly.dev` host is not needed today (no Cloudflare Worker fronts this app, so nothing reaches it with
 that `Host`), but it is our own name and the Worker trap in `docs/deploy/cloudflare.md` makes it
 mandatory the day a Worker is put in front, so it is listed. The new console client is the
@@ -906,3 +905,53 @@ again, which the platform accepts as an alias until 2027-06-30. The `sav_` secre
 server, not to a URI, so they keep working on either release; nothing in R2 needs undoing. Move the
 webhook back only if the old host is still served directly (before #135). `OF_CONSOLE_CLIENT_ID`
 reverts with `fly.toml`; its old client keeps the old redirect URI.
+
+## #135: old hosts redirect
+
+`OF_REDIRECT_HOSTS = "otto-tower.savvagent.com,otto-factory.savvagent.com"` in `fly.toml` makes both
+old hosts redirect-only. A request whose `Host` is one of them (port ignored) gets a bare
+`308 Permanent Redirect` to `https://tower.savvagent.com` + the same path and query, for every method and
+path, before allow-listing or auth: `/mcp`, the console, `/auth/*`, `/webhooks/*`, `/platform/webhooks`,
+`/.well-known/*` and `/healthz`. A `308` keeps the method and body, so a client that follows redirects
+replays its `POST` against the canonical host. `OF_ALLOWED_HOSTS` is now only the Fly origin host.
+Startup refuses a redirect host that is also in `OF_ALLOWED_HOSTS` or `OF_LEGACY_HOSTS`, or is
+`OF_PUBLIC_URL`'s host. If a Cloudflare Worker ever fronts these hosts, the redirect must be done there
+too (the origin sees the Worker's own `Host`; it reads `Host`, never `X-Forwarded-Host`).
+
+**Before the deploy (Rob, human).** Nothing that cannot follow a redirect may still point at an old
+host. GitHub follows no redirects for webhook deliveries, and most senders do not:
+
+- Each customer tracker webhook (GitHub, JIRA) still posted to `https://otto-tower.savvagent.com/webhooks/…`
+  or `https://otto-factory.savvagent.com/webhooks/…` must move to the same path on
+  `https://tower.savvagent.com` (step 10 asked customers to). Redirected deliveries are lost.
+- The tracker GitHub App's webhook URL and setup/callback URL (`/trackers/callback`), in the App's settings,
+  must name `https://tower.savvagent.com`.
+- Confirm the platform's lifecycle webhook already names the canonical host:
+  `fly ssh console -a otto-platform -C 'otto-platform-server resource show https://tower.savvagent.com/mcp'`
+  shows `webhook=https://tower.savvagent.com/platform/webhooks`. If not, run `resource set-webhook` (R2).
+- Agents still registered as `https://otto-tower.savvagent.com/mcp` must re-add the server at
+  `https://tower.savvagent.com/mcp` (`claude mcp add --transport http savvagent-tower …`); an MCP client
+  that pins its OAuth resource to the old URL will not follow the redirect.
+
+**Certs and DNS stay.** Keep both Fly certificates and DNS records
+(`fly certs list -a otto-factory-mcp`): the redirect is served by this app, which needs a valid
+certificate on each old host. Only remove one when nothing resolves to it any more.
+
+**Then drop the platform alias.** After the deploy is verified, remove the alias so the platform stops
+accepting the service under the old URI:
+
+```bash
+fly ssh console -a otto-platform -C 'otto-platform-server resource drop-alias https://otto-tower.savvagent.com/mcp'
+```
+
+**Verify.**
+
+```bash
+curl -sI 'https://otto-tower.savvagent.com/mcp?x=1'      # HTTP/2 308, location: https://tower.savvagent.com/mcp?x=1
+curl -sI 'https://otto-factory.savvagent.com/healthz'    # HTTP/2 308, location: https://tower.savvagent.com/healthz
+curl -sI -X POST https://otto-tower.savvagent.com/platform/webhooks   # 308 too
+curl -sI https://tower.savvagent.com/healthz             # HTTP/2 200, no redirect
+```
+
+**Rolling back.** Put `otto-tower.savvagent.com` back in `OF_ALLOWED_HOSTS` and clear `OF_REDIRECT_HOSTS`
+(never both: startup refuses it), then redeploy. Re-add the platform alias if it was dropped.

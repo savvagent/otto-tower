@@ -46,6 +46,7 @@ fn config(static_dir: &str) -> Config {
         extra_allowed_hosts: vec![],
         legacy_hosts: vec![],
         legacy_sunset: None,
+        redirect_hosts: vec![],
         allowed_origins: vec![],
         static_dir: static_dir.into(),
         run_migrations: false,
@@ -983,4 +984,154 @@ async fn readiness_without_a_shipper_has_no_usage_detail(pool: PgPool) {
     let app = of_server::health::router(Db::from_pool(pool));
     let doc = body_json(get(app, "/readyz").await).await;
     assert!(doc.get("usage").is_none(), "{doc}");
+}
+
+// ----------------------------------------------------------- redirect hosts
+
+/// A host that only redirects, and a second one, to check the list.
+const MOVED: &str = "moved.factory.test";
+const MOVED_TOO: &str = "moved-too.factory.test";
+
+/// Every method and path on a redirect-only host gets a bare `308` to the same
+/// path and query on the public origin, whatever would otherwise have answered
+/// it (a `401`, a webhook receiver, the probes, discovery), and the public host
+/// is served as usual.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn redirect_hosts_308_everything_to_the_public_origin(pool: PgPool) {
+    let db = Db::from_pool(pool.clone());
+    let platform = MockPlatform::start().await;
+    let watcher = Watcher::spawn(pool).await.unwrap();
+    let mut cfg = config("web/build");
+    cfg.redirect_hosts = vec![MOVED.into(), MOVED_TOO.into()];
+    let app = of_server::router(db, watcher.clone(), platform.client(), &cfg).expect("router");
+
+    let cases = [
+        (
+            "GET",
+            "/mcp?session=a%20b&x=1",
+            format!("{PUBLIC}/mcp?session=a%20b&x=1"),
+        ),
+        ("POST", "/mcp", format!("{PUBLIC}/mcp")),
+        ("DELETE", "/mcp", format!("{PUBLIC}/mcp")),
+        (
+            "POST",
+            "/webhooks/github/abc",
+            format!("{PUBLIC}/webhooks/github/abc"),
+        ),
+        (
+            "POST",
+            "/platform/webhooks",
+            format!("{PUBLIC}/platform/webhooks"),
+        ),
+        ("GET", "/healthz", format!("{PUBLIC}/healthz")),
+        (
+            "GET",
+            "/.well-known/oauth-protected-resource",
+            format!("{PUBLIC}/.well-known/oauth-protected-resource"),
+        ),
+        (
+            "GET",
+            "/auth/login?org=acme",
+            format!("{PUBLIC}/auth/login?org=acme"),
+        ),
+        ("GET", "/", format!("{PUBLIC}/")),
+    ];
+    for host in [MOVED, MOVED_TOO] {
+        for (method, uri, location) in &cases {
+            // Port ignored, case ignored, a hostile `X-Forwarded-Host` ignored,
+            // and an absolute-form target or a scheme in the path never leaks
+            // into the Location.
+            let response = send(
+                &app,
+                http::Request::builder()
+                    .method(*method)
+                    .uri(*uri)
+                    .header("host", format!("{}:8443", host.to_uppercase()))
+                    .header("x-forwarded-host", "evil.example")
+                    .header("x-forwarded-proto", "http")
+                    .body(Body::from("payload"))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                http::StatusCode::PERMANENT_REDIRECT,
+                "{method} {uri}"
+            );
+            assert_eq!(
+                header(&response, "location"),
+                Some(location.as_str()),
+                "{method} {uri}"
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert!(body.is_empty(), "{method} {uri}");
+        }
+    }
+
+    // A path that looks like a URL stays a path under the public origin.
+    let response = send(
+        &app,
+        http::Request::builder()
+            .uri("//evil.example/x")
+            .header("host", MOVED)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        header(&response, "location"),
+        Some("https://factory.test//evil.example/x")
+    );
+
+    // The public host is unaffected, and so is an unrelated host.
+    let response = send(
+        &app,
+        http::Request::builder()
+            .uri("/healthz")
+            .header("host", "factory.test")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let response = send(
+        &app,
+        http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("host", "factory.test")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_ne!(response.status(), http::StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(header(&response, "location"), None);
+
+    watcher.shutdown().await;
+}
+
+/// With `OF_REDIRECT_HOSTS` unset (the default) a request naming the old host
+/// is not redirected.
+#[sqlx::test(migrations = "../of-core/migrations")]
+async fn without_redirect_hosts_nothing_is_redirected(pool: PgPool) {
+    let db = Db::from_pool(pool.clone());
+    let platform = MockPlatform::start().await;
+    let watcher = Watcher::spawn(pool).await.unwrap();
+    let app = of_server::router(db, watcher.clone(), platform.client(), &config("web/build"))
+        .expect("router");
+
+    let response = send(
+        &app,
+        http::Request::builder()
+            .uri("/healthz")
+            .header("host", MOVED)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), http::StatusCode::OK);
+
+    watcher.shutdown().await;
 }

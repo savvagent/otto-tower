@@ -125,6 +125,13 @@ pub struct Config {
     /// When the legacy hosts stop working (`OF_LEGACY_SUNSET`), announced in a
     /// `Sunset` header and in the MCP instructions. Requires `legacy_hosts`.
     pub legacy_sunset: Option<DateTime<Utc>>,
+    /// Hostnames that only redirect (`OF_REDIRECT_HOSTS`): a request whose
+    /// `Host` is one of these gets a `308` to the same path and query on
+    /// `public_url`, whatever the method and path, before anything else
+    /// looks at it. Bare, lowercase hostnames; never `public_url`'s own, and
+    /// never also in `extra_allowed_hosts` or `legacy_hosts` (a host cannot
+    /// both be served and redirected).
+    pub redirect_hosts: Vec<String>,
     /// Browser origins accepted on requests to `/mcp` that carry `Origin`.
     /// Empty disables the check, which is right for a surface reached by CLI
     /// agents rather than by pages.
@@ -149,6 +156,7 @@ impl std::fmt::Debug for Config {
             .field("retired_set", &self.retired_set)
             .field("legacy_hosts", &self.legacy_hosts)
             .field("legacy_sunset", &self.legacy_sunset)
+            .field("redirect_hosts", &self.redirect_hosts)
             .field("static_dir", &self.static_dir)
             .field("run_migrations", &self.run_migrations)
             .field("log_format", &self.log_format)
@@ -189,6 +197,14 @@ impl Config {
             optional("OF_LEGACY_HOSTS").as_deref(),
             optional("OF_LEGACY_SUNSET").as_deref(),
             parsed.host_str().unwrap_or_default(),
+        )?;
+
+        let extra_allowed_hosts = list("OF_ALLOWED_HOSTS");
+        let redirect_hosts = redirect_hosts(
+            optional("OF_REDIRECT_HOSTS").as_deref(),
+            parsed.host_str().unwrap_or_default(),
+            &extra_allowed_hosts,
+            &legacy_hosts,
         )?;
 
         let platform_url = required("OF_PLATFORM_URL")?
@@ -243,9 +259,10 @@ impl Config {
             upgrade_url: upgrade_url(optional("OF_UPGRADE_URL"), &platform_url),
             retired_set: retired_set(|name| std::env::var_os(name).is_some()),
 
-            extra_allowed_hosts: list("OF_ALLOWED_HOSTS"),
+            extra_allowed_hosts,
             legacy_hosts,
             legacy_sunset,
+            redirect_hosts,
             allowed_origins: list("OF_ALLOWED_ORIGINS"),
 
             static_dir: optional("OF_STATIC_DIR")
@@ -414,12 +431,55 @@ fn legacy(
 /// nobody would be told to move before the sunset. The public URL's own host
 /// is refused too — the canonical host cannot also be the deprecated one.
 fn legacy_hosts(raw: Option<&str>, public_host: &str) -> Result<Vec<String>> {
+    bare_hostnames("OF_LEGACY_HOSTS", "deprecated", raw, public_host)
+}
+
+/// `OF_REDIRECT_HOSTS`: the same strict list as [`legacy_hosts`], plus the
+/// refusal of any host that is also served.
+///
+/// A host in both lists would be ambiguous, and the redirect would silently win
+/// (it runs first), so whoever added it to the allow-list to keep a client
+/// working would be wrong without being told. Compared case-insensitively and
+/// without surrounding whitespace, since `OF_ALLOWED_HOSTS` is not normalized.
+fn redirect_hosts(
+    raw: Option<&str>,
+    public_host: &str,
+    allowed: &[String],
+    legacy: &[String],
+) -> Result<Vec<String>> {
+    let hosts = bare_hostnames("OF_REDIRECT_HOSTS", "redirected", raw, public_host)?;
+    for host in &hosts {
+        let clash = |name: &str, list: &[String]| {
+            list.iter()
+                .any(|h| h.trim().eq_ignore_ascii_case(host))
+                .then(|| {
+                    anyhow!(
+                        "OF_REDIRECT_HOSTS names {host:?}, which is also in {name}; a host \
+                         is either served or redirected, so remove it from one of them"
+                    )
+                })
+        };
+        if let Some(err) =
+            clash("OF_ALLOWED_HOSTS", allowed).or_else(|| clash("OF_LEGACY_HOSTS", legacy))
+        {
+            return Err(err);
+        }
+    }
+    Ok(hosts)
+}
+
+fn bare_hostnames(
+    var: &str,
+    role: &str,
+    raw: Option<&str>,
+    public_host: &str,
+) -> Result<Vec<String>> {
     let Some(raw) = raw else {
         return Ok(vec![]);
     };
     let invalid = |why: String| {
         anyhow!(
-            "OF_LEGACY_HOSTS={raw:?} is not valid: {why}. Expected comma-separated \
+            "{var}={raw:?} is not valid: {why}. Expected comma-separated \
              bare hostnames, e.g. old.example.com"
         )
     };
@@ -452,7 +512,7 @@ fn legacy_hosts(raw: Option<&str>, public_host: &str) -> Result<Vec<String>> {
         if host == public_host.to_ascii_lowercase() {
             return Err(invalid(format!(
                 "{entry:?} is OF_PUBLIC_URL's own host, which is canonical and cannot \
-                 also be deprecated"
+                 also be {role}"
             )));
         }
         if !hosts.contains(&host) {
@@ -520,6 +580,7 @@ impl Config {
             extra_allowed_hosts: vec![],
             legacy_hosts: vec![],
             legacy_sunset: None,
+            redirect_hosts: vec![],
             allowed_origins: vec![],
             static_dir: "web/build".into(),
             run_migrations: true,
@@ -700,6 +761,64 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("canonical"), "{err}");
+    }
+
+    #[test]
+    fn redirect_hosts_are_bare_lowercase_hostnames_and_default_to_none() {
+        let none = |raw| redirect_hosts(raw, "tower.example.com", &[], &[]).unwrap();
+        assert!(none(None).is_empty());
+        assert_eq!(
+            none(Some(" Old.Example.com ,older.example.com,old.example.com")),
+            vec!["old.example.com", "older.example.com"]
+        );
+        for bad in [
+            "https://old.example.com",
+            "old.example.com:443",
+            "old.example.com/mcp",
+            "old.example.com.",
+            "old.example.com,",
+            ",",
+        ] {
+            let err = redirect_hosts(Some(bad), "tower.example.com", &[], &[])
+                .expect_err(bad)
+                .to_string();
+            assert!(err.contains("OF_REDIRECT_HOSTS"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_public_host_cannot_be_redirected() {
+        let err = redirect_hosts(Some("TOWER.example.com"), "tower.example.com", &[], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("canonical") && err.contains("OF_REDIRECT_HOSTS"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_host_cannot_be_both_redirected_and_served() {
+        let allowed = vec!["x.example.com".to_string(), " Old.example.com".to_string()];
+        let err = redirect_hosts(Some("old.example.com"), "tower.example.com", &allowed, &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("OF_ALLOWED_HOSTS"), "{err}");
+
+        let legacy = vec!["old.example.com".to_string()];
+        let err = redirect_hosts(Some("old.example.com"), "tower.example.com", &[], &legacy)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("OF_LEGACY_HOSTS"), "{err}");
+
+        // Disjoint lists are fine.
+        let ok = redirect_hosts(
+            Some("old.example.com"),
+            "tower.example.com",
+            &allowed[..1],
+            &[],
+        );
+        assert_eq!(ok.unwrap(), vec!["old.example.com"]);
     }
 
     #[test]

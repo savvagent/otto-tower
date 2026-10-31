@@ -14,7 +14,11 @@
 //!   everything else           web/build   the console SPA, index.html fallback
 //! ```
 //!
-//! Around all of it, `of_mcp::legacy::mark` stamps a deprecation notice on
+//! Outside all of that, a request whose `Host` is one of `OF_REDIRECT_HOSTS` is
+//! answered with a `308` to the same path and query on `OF_PUBLIC_URL`, for every
+//! method and path, before host allow-listing, auth or anything below sees it.
+//!
+//! Around the rest, `of_mcp::legacy::mark` stamps a deprecation notice on
 //! every response to a request that came through an `OF_LEGACY_HOSTS` host,
 //! and such a request for the console (or `/auth/login`) is `308`-redirected
 //! to the same path on `OF_PUBLIC_URL` instead of being served.
@@ -200,7 +204,80 @@ fn assemble(
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(deprecation(config)?),
             of_mcp::legacy::mark,
+        ))
+        // Outside even `mark`: a redirect-only host is not a legacy host, gets
+        // no notice, and nothing (allow-listing, auth, the marker) runs for it.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(Redirects::new(config)),
+            redirect_old_hosts,
         )))
+}
+
+/// The redirect-only hosts (`OF_REDIRECT_HOSTS`) and where they send everyone.
+struct Redirects {
+    hosts: Vec<String>,
+    /// `OF_PUBLIC_URL` without a trailing slash. The only source of the
+    /// scheme and host in a `Location`; the request supplies the path and query
+    /// and nothing else.
+    public_url: String,
+}
+
+impl Redirects {
+    fn new(config: &Config) -> Self {
+        Self {
+            hosts: config.redirect_hosts.clone(),
+            public_url: config.public_url.trim_end_matches('/').to_string(),
+        }
+    }
+
+    /// Whether the request was addressed to a redirect-only host. Reads `Host`
+    /// (else the URI's authority, for HTTP/2), never `X-Forwarded-Host`, which
+    /// any client can set; the port is ignored.
+    fn matches(&self, req: &Request<Body>) -> bool {
+        if self.hosts.is_empty() {
+            return false;
+        }
+        let authority = req
+            .headers()
+            .get(http::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| req.uri().authority().map(|a| a.as_str()));
+        let Some(authority) = authority else {
+            return false;
+        };
+        let host = match authority.rsplit_once(':') {
+            Some((host, port)) if port.bytes().all(|b| b.is_ascii_digit()) => host,
+            _ => authority,
+        };
+        self.hosts.iter().any(|h| h.eq_ignore_ascii_case(host))
+    }
+
+    fn response(&self, req: &Request<Body>) -> Response {
+        let target = req.uri().path_and_query().map_or("/", |pq| pq.as_str());
+        let location = http::HeaderValue::from_str(&format!("{}{target}", self.public_url))
+            .or_else(|_| http::HeaderValue::from_str(&format!("{}/", self.public_url)));
+        let mut response = StatusCode::PERMANENT_REDIRECT.into_response();
+        if let Ok(location) = location {
+            response
+                .headers_mut()
+                .insert(http::header::LOCATION, location);
+        }
+        response
+    }
+}
+
+/// `308` every request to a redirect-only host to the canonical origin,
+/// keeping method semantics (a `308` is replayed as the same method and body).
+async fn redirect_old_hosts(
+    axum::extract::State(redirects): axum::extract::State<Arc<Redirects>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if redirects.matches(&req) {
+        redirects.response(&req)
+    } else {
+        next.run(req).await
+    }
 }
 
 /// The legacy hosts and what their callers are told: the canonical public
