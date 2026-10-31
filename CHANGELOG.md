@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.0](https://github.com/savvagent/otto-tower/compare/v0.16.1...v0.17.0) (2026-10-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* switch to tower.savvagent.com and the savvagent-tower MCP name ([#284](https://github.com/savvagent/otto-tower/issues/284))
+
+### Features
+
+* switch to tower.savvagent.com and the savvagent-tower MCP name ([#284](https://github.com/savvagent/otto-tower/issues/284)) ([e963029](https://github.com/savvagent/otto-tower/commit/e963029058b6cc87f43626200a8d1e83be94f65d)), closes [#279](https://github.com/savvagent/otto-tower/issues/279)
+
 ## [0.16.1](https://github.com/savvagent/otto-tower/compare/v0.16.0...v0.16.1) (2026-10-31)
 
 
