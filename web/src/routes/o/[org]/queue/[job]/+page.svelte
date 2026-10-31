@@ -16,7 +16,7 @@
   /**
    * One job.
    *
-   * `metadata` is rendered as raw JSON on purpose. otto-tower never interprets
+   * `metadata` is rendered as raw JSON on purpose. Savvagent Tower never interprets
    * it — it is where a customer's own skill keeps whatever its methodology needs
    * — so any attempt to lay it out prettily would be the console inventing a
    * schema the server promised not to have. Showing it verbatim is the honest

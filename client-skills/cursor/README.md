@@ -15,7 +15,7 @@ this hypothesis still holds — Cursor's own extensibility surface has changed s
 than once.
 
 **Does Cursor's automation surface hold a credential itself?** Unknown — establish this
-first. If Cursor's hook/extension surface can reach a valid otto-tower MCP credential
+first. If Cursor's hook/extension surface can reach a valid Savvagent Tower MCP credential
 directly, prefer a single deterministic script implementing `../README.md`'s
 job-lifecycle contract outright. If it can't — the same limitation Claude Code's own
 `SessionStart` hook has — `../claude-code/README.md`'s two-actor split (a deterministic
@@ -26,7 +26,7 @@ propose a different mechanism entirely if neither shape fits.
 
 Follow `../README.md`'s contribution checklist exactly. In short, a PR adding this
 template should be able to tick every box there: name the Cursor version tested, name the
-exact mechanism used (with a link to Cursor's own docs for it), list every otto-tower
+exact mechanism used (with a link to Cursor's own docs for it), list every Savvagent Tower
 MCP tool called and with what arguments, state plainly whether it was verified against a
 real running `of-server` or is an untested hypothesis, and follow the silent-failure /
 no-auto-registration / claim-only-what-you-created rules from the contract.

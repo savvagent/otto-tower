@@ -1,10 +1,10 @@
-# `web/` — the otto-tower console
+# `web/` — the Savvagent Tower console
 
 SvelteKit 2 · Svelte 5 (runes) · Tailwind v4 · TypeScript, strict.
 
-What a human touches in otto-tower: repos and their live leases, a read-only queue,
+What a human touches in Savvagent Tower: repos and their live leases, a read-only queue,
 tracker connections, and the audit log. Sign-in, members, teams, SSO, usage, and tokens are
-the otto platform's; the console signs in through it and links to it.
+the Savvagent platform's; the console signs in through it and links to it.
 
 ```bash
 npm install
@@ -155,7 +155,7 @@ Two tiers now, each with one job:
 | `localStorage['of.locale']` | a choice made in this browser | wins when present                |
 | `navigator.languages`       | the browser's preference      | fallback when nothing was chosen |
 
-There used to be a third, the account's `users.locale` on otto-tower's own user row, which was
+There used to be a third, the account's `users.locale` on Savvagent Tower's own user row, which was
 the source of truth so a choice followed the person between devices. Accounts are the
 platform's now and its API reports no locale, so nothing in the console sets the language
 today beyond the browser's preference. `locale.ts` keeps `reconcile` and `applyLocale` for when
@@ -222,6 +222,6 @@ is what a self-hosted deployment does.
 ## Adding a client to the connect page
 
 Add an entry to `CLIENTS` in `src/lib/clients.ts`. Every client gets the same two forms —
-OAuth and access token — because otto-tower is coding-agent agnostic by constraint, and a
+OAuth and access token — because Savvagent Tower is coding-agent agnostic by constraint, and a
 console that gave one agent a bespoke wizard and the rest a footnote would be the first
 place that promise quietly broke.

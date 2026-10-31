@@ -35,7 +35,7 @@ pub struct Config {
     /// an audience derived from one is not an audience check.
     pub resource_uri: String,
 
-    /// Base URL of the otto platform: the authorization server and identity
+    /// Base URL of the Savvagent platform: the authorization server and identity
     /// directory. Where a person is sent to sign in, manage members, or upgrade.
     pub platform_url: String,
 
@@ -212,7 +212,7 @@ pub struct AppState {
     /// loaded once at startup and shared by every request.
     pub cipher: Arc<Cipher>,
     pub config: Arc<Config>,
-    /// The otto platform: introspects the bearer tokens console requests carry
+    /// The Savvagent platform: introspects the bearer tokens console requests carry
     /// and answers identity questions (org slug, team by slug or id).
     pub platform: Arc<PlatformClient>,
     /// The platform's token endpoints (code exchange, refresh, revoke), for the

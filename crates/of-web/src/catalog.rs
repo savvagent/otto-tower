@@ -263,9 +263,9 @@ pub fn catalog() -> Vec<Endpoint> {
             .auth(Auth::Public)
             .body_limit(65_536)
             .returns("PlatformEventAck")
-            .summary("Receive otto platform lifecycle webhooks")
+            .summary("Receive Savvagent platform lifecycle webhooks")
             .describe(
-                "Called by the otto platform when it deletes an org (`org.deleted`), \
+                "Called by the Savvagent platform when it deletes an org (`org.deleted`), \
                  deletes a team (`team.deleted`), or removes a member \
                  (`member.removed`), so this service can clean up the rows it holds \
                  for them. Public by necessity: authenticated by the `Otto-Signature` \
@@ -282,7 +282,7 @@ pub fn catalog() -> Vec<Endpoint> {
             .status(303)
             .summary("Start console sign-in")
             .describe(
-                "Redirects (303) to the otto platform's authorization endpoint with a \
+                "Redirects (303) to the Savvagent platform's authorization endpoint with a \
                  fresh PKCE challenge (S256) and `state`, remembering both, with where to \
                  land afterwards, in a short-lived sealed `__Host-of_oauth` cookie. \
                  `org=<slug>` is passed to the platform as `org_hint`, so a person who \

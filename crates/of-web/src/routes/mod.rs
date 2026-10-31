@@ -6,7 +6,7 @@
 //! same act.
 //!
 //! Identity — accounts, orgs, members, teams, SSO, tokens, usage — is not here:
-//! it lives in the otto platform.
+//! it lives in the Savvagent platform.
 
 pub mod audit;
 pub mod auth;

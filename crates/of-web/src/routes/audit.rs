@@ -1,6 +1,6 @@
 //! This service's audit trail, read-only.
 //!
-//! The domain events otto-tower records itself (`repo.*`, `tracker.*`, `job.*`,
+//! The domain events Savvagent Tower records itself (`repo.*`, `tracker.*`, `job.*`,
 //! and the clean-up it performs for the platform's lifecycle webhooks), from the
 //! `audit_events` table in this service's own database. Identity and sign-in
 //! events are the platform's, in the platform's audit log.

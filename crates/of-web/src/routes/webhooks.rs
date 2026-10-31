@@ -359,7 +359,7 @@ async fn apply(
             // which are the only comment kind applied: they carry the drift
             // signal (`InboundDecision::Changed`). JIRA comment events stay
             // skipped, as they always have been: their payload says nothing
-            // about who wrote the comment, so otto-tower's own write-back
+            // about who wrote the comment, so Savvagent Tower's own write-back
             // comments could not be told apart from a person's and every
             // claim or completion note would flag its own job.
             let applies = event.kind == of_trackers::webhook::WebhookEventKind::Issue

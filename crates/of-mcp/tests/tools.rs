@@ -259,6 +259,7 @@ async fn whoami_names_the_one_org_this_token_opens(pool: PgPool) {
         .whoami(Extension(parts(&caller)), Parameters(tools::org::NoArgs {}))
         .await);
 
+    assert_eq!(out["service"], "Savvagent Tower");
     assert_eq!(out["user"]["email"], "rob@acme.test");
     assert_eq!(out["org"]["slug"], "acme");
     assert_eq!(out["org"]["plan"], "free");
@@ -290,16 +291,16 @@ async fn a_handler_without_a_principal_blames_the_server(pool: PgPool) {
 
 /// `get_info` is answered from `ServerInfo::default()` if nobody sets
 /// `server_info` explicitly, and that default is `rmcp`'s own crate name and
-/// version — expanded in `rmcp`'s build context, not otto-tower's. Every
-/// client that completes `initialize` should see otto-tower identify
+/// version — expanded in `rmcp`'s build context, not Savvagent Tower's. Every
+/// client that completes `initialize` should see Savvagent Tower identify
 /// itself, not the library it is built on.
 #[sqlx::test(migrations = "../of-core/migrations")]
-async fn get_info_reports_otto_towers_own_name_and_version(pool: PgPool) {
+async fn get_info_reports_savvagent_towers_own_name_and_version(pool: PgPool) {
     let (env, _caller) = env(pool).await;
 
     let info = env.factory.get_info();
 
-    assert_eq!(info.server_info.name, "otto-tower");
+    assert_eq!(info.server_info.name, "savvagent-tower");
     assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
 }
 
@@ -5242,7 +5243,7 @@ async fn a_team_channel_is_not_found_for_a_non_member(pool: PgPool) {
             assert_eq!(
                 e.message.replace(&format!("{team:?}"), "\"T\""),
                 "team \"T\" was not found in this organization, or you are not on it. \
-                 Teams are managed in the otto platform console; name a team you are on, \
+                 Teams are managed in the Savvagent platform console; name a team you are on, \
                  or use a repo's channel (repo or remote) instead.",
                 "a hidden team must read exactly like an unknown one"
             );
@@ -6996,7 +6997,7 @@ async fn sync_ticket_reports_a_blocker_with_no_job(pool: PgPool) {
 }
 
 /// The pull is a drift signal too: an issue changed after the job was made,
-/// with no revision otto-tower wrote, marks the job stale, in the result and
+/// with no revision Savvagent Tower wrote, marks the job stale, in the result and
 /// in what `ready` shows the next agent.
 #[sqlx::test(migrations = "../of-core/migrations")]
 async fn sync_ticket_marks_a_job_whose_issue_changed_since_stale(pool: PgPool) {

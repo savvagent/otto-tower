@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Test support: an in-process mock of the otto platform's resource-server API. Dev-dependency only."
+description = "Test support: an in-process mock of the Savvagent platform's resource-server API. Dev-dependency only."
 
 [dependencies]
 otto-resource.workspace = true

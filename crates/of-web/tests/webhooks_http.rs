@@ -1152,7 +1152,7 @@ async fn a_comment_delivered_after_a_later_issue_edit_still_marks_the_job(pool: 
     assert_eq!(job.remote_revision.as_deref(), Some(t2.as_str()));
 }
 
-/// A bot's comment (otto-tower's own write-back among them) is not a change
+/// A bot's comment (Savvagent Tower's own write-back among them) is not a change
 /// to the work.
 #[sqlx::test(migrations = "../of-core/migrations")]
 async fn a_bot_comment_does_not_mark_the_job_stale(pool: PgPool) {

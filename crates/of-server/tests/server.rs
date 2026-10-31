@@ -146,7 +146,7 @@ async fn discovery_is_open_and_points_at_the_platform(pool: PgPool) {
     assert_eq!(resource.status(), http::StatusCode::OK);
     let doc = body_json(resource).await;
     assert_eq!(doc["resource"], RESOURCE);
-    // The console's signed-out "Back to otto" link is built from exactly this
+    // The console's signed-out "Back to Savvagent" link is built from exactly this
     // value. The signed-in side reads `/api/session`'s `platformUrl`:
     // `the_console_and_the_discovery_document_name_the_same_platform` pins the
     // config that feeds it, and `of-web`'s `console_login.rs` checks the served
@@ -872,7 +872,7 @@ async fn initialize_over_a_legacy_host_opens_with_the_deprecation_paragraph(pool
     assert_eq!(canonical.status(), http::StatusCode::OK);
     let text = instructions(body_json(canonical).await);
     assert!(!text.contains("DEPRECATED"), "{text}");
-    assert!(text.starts_with("otto-tower coordinates"), "{text}");
+    assert!(text.starts_with("Savvagent Tower coordinates"), "{text}");
 
     watcher.shutdown().await;
 }

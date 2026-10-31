@@ -59,7 +59,7 @@
 </script>
 
 <svelte:head>
-  <title>API reference · otto-tower</title>
+  <title>API reference · Savvagent Tower</title>
 </svelte:head>
 
 <div class="space-y-6">

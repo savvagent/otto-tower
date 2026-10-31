@@ -1,4 +1,4 @@
-//! otto-tower's own migrations, in `crates/of-core/migrations`.
+//! Savvagent Tower's own migrations, in `crates/of-core/migrations`.
 //!
 //! `0001_baseline.sql` is a squashed, domain-only baseline that replaced the
 //! original `0001`-`0034` history at the platform cutover
@@ -19,7 +19,7 @@ use otto_tenant::Db;
 /// it to `#[sqlx::test(migrator = "of_core::MIGRATOR")]`.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
-/// Apply every otto-tower migration. Safe to run from several replicas at
+/// Apply every Savvagent Tower migration. Safe to run from several replicas at
 /// once: sqlx takes a Postgres advisory lock for the duration, so the losers
 /// wait rather than racing each other through the same DDL.
 pub async fn migrate(db: &Db) -> crate::Result<()> {

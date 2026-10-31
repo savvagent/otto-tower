@@ -151,7 +151,7 @@ pub fn inbound_decision(
 /// comment's: created, edited, deleted).
 ///
 /// The shared echo check does not apply. `remote_revision` is the issue
-/// revision whose body the job holds, and a later issue edit or otto-tower's
+/// revision whose body the job holds, and a later issue edit or Savvagent Tower's
 /// own write-back moves it past a comment the job has still not seen, so
 /// comparing against it would drop that comment. The guard is instead
 /// `ticket_changed_at`, the newest foreign change already counted: a comment
@@ -165,7 +165,7 @@ fn github_comment_decision(event: &WebhookEvent, job: &Job) -> InboundDecision {
     if job.status.is_terminal() {
         return InboundDecision::NoOp;
     }
-    // The bot filter is what keeps otto-tower's own write-back comment (a
+    // The bot filter is what keeps Savvagent Tower's own write-back comment (a
     // claim or completion note) from flagging its own job, since no echo check
     // runs ahead of a comment. It also ignores other apps' bots, which is the
     // intent: a CI status comment is not a change to what the work is. It
@@ -454,9 +454,9 @@ pub fn blocker_tickets(body: &str, owner: &str, repo: &str) -> Vec<TicketQuery> 
     tickets
 }
 
-/// The time of a change to an issue that otto-tower did not make, if its
+/// The time of a change to an issue that Savvagent Tower did not make, if its
 /// `updated_at` says there was one: newer than `stored`, the revision
-/// otto-tower recorded after its own last write, or any readable revision when
+/// Savvagent Tower recorded after its own last write, or any readable revision when
 /// nothing was recorded. An unreadable `updated_at` is no evidence of a
 /// change. Whether that change makes the job stale is decided at read time,
 /// against when its description was written, so this only reports it.
@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(
             foreign_change(Some(at), Some(at)),
             None,
-            "otto-tower's own write"
+            "Savvagent Tower's own write"
         );
         assert_eq!(foreign_change(Some(at), Some(later)), None);
         // The same instant in another offset is the same revision.

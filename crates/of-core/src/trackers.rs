@@ -450,7 +450,7 @@ pub async fn resolve_binding(
 ///
 /// The schema only guarantees `UNIQUE (repo_id, provider)` — nothing stops two
 /// repos in the same org from being bound to the same external project/repo
-/// (e.g. two otto-tower repos both mapped to one JIRA project). If that
+/// (e.g. two Savvagent Tower repos both mapped to one JIRA project). If that
 /// happens, there is no principled way to pick a "right" one, so this
 /// deliberately fails loudly rather than returning an arbitrary match — a
 /// caller (Task 4's sync engine) that silently picked one would risk creating

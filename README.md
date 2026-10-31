@@ -1,18 +1,18 @@
-# otto-tower
+# Savvagent Tower
 
 A hosted, multi-tenant **MCP server for coordinating agentic coding work** across
 enterprises and teams.
 
 Server-only: no TUI, no PTY, no local bridge binary, no plugin. A team member adds one
 HTTPS endpoint to their coding agent, signs in through the browser once (at the
-[otto platform](https://github.com/savvagent/otto-platform), which owns accounts, orgs, teams,
+[Savvagent platform](https://github.com/savvagent/otto-platform), which owns accounts, orgs, teams,
 SSO, and billing), and from inside
 any registered git repository gets tools to add, claim, and complete jobs; to see what
 every other agent on the team is working on and where; and to keep GitHub Issues / JIRA in
 sync with that work.
 
 ```bash
-claude mcp add --transport http otto-tower X
+claude mcp add --transport http savvagent-tower https://tower.savvagent.com/mcp
 ```
 
 That is the entire client-side install.
@@ -28,7 +28,7 @@ org-owned entity, not a config string. Jobs belong to repos, agents announce whi
 they are in and which resource within it they hold (a branch, a staging slot, a migration
 lock), and the primitives that stop two agents colliding are repo-scoped.
 
-**It is a substrate, not a workflow.** otto-tower deliberately does less than its
+**It is a substrate, not a workflow.** Savvagent Tower deliberately does less than its
 ancestor. It provides coordination primitives and ships no opinion about how work should be
 specified, planned, reviewed, or measured. Customers encode their own methodology in their
 own skills, commands, plugins, and subagents. When a capability could live either in the
@@ -42,11 +42,11 @@ support is incomplete.
 Full design: [`docs/specs/2026-09-01-otto-factory-design.md`](docs/specs/2026-09-01-otto-factory-design.md).
 Build order: [`docs/plans/2026-09-01-milestone-1.md`](docs/plans/2026-09-01-milestone-1.md).
 
-## A resource server of the otto platform
+## A resource server of the Savvagent platform
 
-otto-tower does not sign anyone in and does not store who anyone is. The **otto platform**
+Savvagent Tower does not sign anyone in and does not store who anyone is. The **Savvagent platform**
 is the OAuth 2.1 authorization server and the system of record for identity and billing;
-otto-tower is one of the *resource servers* it protects, and keeps only its own domain —
+Savvagent Tower is one of the *resource servers* it protects, and keeps only its own domain —
 repos, jobs, leases, messages, trackers — in its own database.
 
 ```
@@ -190,8 +190,8 @@ The rest are secrets:
 fly secrets set \
   DATABASE_URL="postgres://…" \
   OF_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
-  OF_INTROSPECTION_SECRET="otto_rs_…" \
-  OF_PLATFORM_WEBHOOK_SECRET="otto_whsec_…"
+  OF_INTROSPECTION_SECRET="sav_rs_…" \
+  OF_PLATFORM_WEBHOOK_SECRET="sav_whsec_…"
 fly deploy
 ```
 
@@ -246,7 +246,7 @@ be asked, the call goes through. Console changes take up to a minute to apply.
 ## Relationship to dark-agent
 
 `dark-agent` is the single-organization ancestor — a TUI hosting a `claude`
-PTY plus a queue server authenticated by AWS SigV4 with an IAM-ARN allowlist. otto-tower
+PTY plus a queue server authenticated by AWS SigV4 with an IAM-ARN allowlist. Savvagent Tower
 takes the server's ideas (job lifecycle, atomic claim, dependency graph, `LISTEN`/`NOTIFY`
 watch, message channel, repo registry), re-tenants them, and drops the rest. It is not a fork
 and shares no code.

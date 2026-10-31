@@ -69,7 +69,7 @@ fn nothing_runs_the_platforms_migrations_on_this_database() {
 }
 
 /// The factory's database is domain-only: identity, auth, and billing belong to
-/// the otto platform's database, and nothing here may grow a foreign key into
+/// the Savvagent platform's database, and nothing here may grow a foreign key into
 /// them. A `REFERENCES orgs (...)` would compile, pass every test against a
 /// single database, and make the cutover to a separate platform database
 /// impossible; a `CREATE TABLE users` would quietly start a second source of

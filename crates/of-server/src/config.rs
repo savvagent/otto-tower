@@ -44,17 +44,17 @@ pub struct Config {
     /// platform (`otto-platform-server resource register`).
     pub resource_uri: String,
 
-    /// The otto platform's base URL, e.g. `https://otto.savvagent.com`: the OAuth
+    /// The Savvagent platform's base URL, e.g. `https://savvagent.com`: the OAuth
     /// authorization server, the identity directory, and the billing system of
     /// record. Advertised to MCP clients as this resource's authorization server
     /// and called for token introspection, member and team lookups, and usage.
     pub platform_url: String,
     /// The introspection credential the platform issued when this service was
-    /// registered (`otto_rs_…`). Authenticates every call this service makes to
+    /// registered (`sav_rs_…`). Authenticates every call this service makes to
     /// the platform, as HTTP Basic with `resource_uri` as the user.
     pub introspection_secret: String,
     /// The key the platform signs its lifecycle webhooks to this service with
-    /// (`otto_whsec_…`), issued when the webhook URL
+    /// (`sav_whsec_…`), issued when the webhook URL
     /// (`{public_url}/platform/webhooks`) was registered. A different secret
     /// from the introspection credential, on purpose.
     pub platform_webhook_secret: String,
@@ -314,7 +314,7 @@ impl Config {
 /// that is set is warned about at startup rather than silently ignored.
 pub const RETIRED: &[(&str, &str)] = &[(
     "OF_ENFORCE_QUOTAS",
-    "completed jobs are always refused when the otto platform reports the \
+    "completed jobs are always refused when the Savvagent platform reports the \
      organization blocked (budget_exceeded or payment_required), and nothing \
      else is ever refused for billing; remove it from the environment",
 )];

@@ -3,7 +3,7 @@
 //! The audit trail itself — `Entry`, `Db::audit`, `Tx::audit`, and the identity
 //! and auth action names — is `otto_tenant::audit`. An action is a plain string,
 //! so a service adds its own without touching the platform; these are the ones
-//! otto-tower writes. Import this module's `action` alongside
+//! Savvagent Tower writes. Import this module's `action` alongside
 //! `otto_tenant::audit::action` under another name where both are needed.
 
 pub mod action {

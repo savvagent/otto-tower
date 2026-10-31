@@ -1,14 +1,14 @@
 ---
 name: otto-tower-scanner
-description: Use when scanning open GitHub issues in savvagent/otto-factory and enqueuing eligible ones into the otto-tower job queue — checking each issue carries exactly one type label (bug/enhancement/documentation) first, adding one in place if missing, then queueing it. Trigger on "scan issues", "sync issues to otto-tower", "queue open issues", "run otto-tower-scanner", or a scheduled/periodic invocation of this skill. Not for creating a brand-new issue or for claiming and working a queued job (otto-tower-worker, which dispatches otto-tower-development for the per-job mechanics).
+description: Use when scanning open GitHub issues in savvagent/otto-factory and enqueuing eligible ones into the Savvagent Tower job queue — checking each issue carries exactly one type label (bug/enhancement/documentation) first, adding one in place if missing, then queueing it. Trigger on "scan issues", "sync issues to Savvagent Tower", "queue open issues", "run otto-tower-scanner", or a scheduled/periodic invocation of this skill. Not for creating a brand-new issue or for claiming and working a queued job (otto-tower-worker, which dispatches otto-tower-development for the per-job mechanics).
 ---
 
-# Otto Tower Scanner
+# Savvagent Tower Scanner
 
 This skill is the periodic bridge between GitHub Issues on `savvagent/otto-factory` and
-the otto-tower job queue: it finds open issues that have no job yet, makes sure each
-one carries exactly one type label, and queues it via the `otto-tower` MCP server. It
-is Claude-Code-native — it orchestrates via the Agent tool and calls `otto-tower` MCP
+the Savvagent Tower job queue: it finds open issues that have no job yet, makes sure each
+one carries exactly one type label, and queues it via the `savvagent-tower` MCP server. It
+is Claude-Code-native — it orchestrates via the Agent tool and calls `savvagent-tower` MCP
 tools directly. Like `otto-tower-development`, this file's own canonical location is
 `.github/skills/otto-tower-scanner/SKILL.md` — the same single source of truth every
 skill in this repo uses — and it is visible to Claude Code at
@@ -50,10 +50,10 @@ context) with this task:
 
 1. Call `whoami`. Confirm the organization it returns is `savvagent` — this
    token should open the org that owns `savvagent/otto-factory`'s
-   otto-tower registration. If you cannot confirm that with certainty,
+   Savvagent Tower registration. If you cannot confirm that with certainty,
    stop and report which org `whoami` returned rather than proceeding as if
    it were correct.
-2. Resolve the otto-tower repo slug for `savvagent/otto-factory` — call
+2. Resolve the Savvagent Tower repo slug for `savvagent/otto-factory` — call
    `resolve_repo` with `remote` set to `git remote get-url origin`
    (`https://github.com/savvagent/otto-factory.git`). If it fails to
    resolve, call `list_repos`. If `savvagent/otto-factory` is truly
@@ -221,7 +221,7 @@ one-line result. Do not re-fetch the issue, the job, or re-run `list_jobs` to
 Output one concise summary:
 
 ```
-Otto Tower Scanner — savvagent/otto-factory
+Savvagent Tower Scanner — savvagent/otto-factory
 
 Queued (<n>):
   #<n> — queued as <job-id> (type: ok)

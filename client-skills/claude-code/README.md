@@ -1,7 +1,7 @@
 # Claude Code — session-start marker
 
-Registers a session-start marker job on otto-tower automatically whenever a Claude Code
-session starts fresh in a repo registered with otto-tower, **and whose git remote host you
+Registers a session-start marker job on Savvagent Tower automatically whenever a Claude Code
+session starts fresh in a repo registered with Savvagent Tower, **and whose git remote host you
 have explicitly opted into** (see Install — this is a required step, not optional). This is
 the reference implementation for `client-skills/` — read `../README.md` first for the
 behavior contract this template follows.
@@ -9,10 +9,10 @@ behavior contract this template follows.
 ## What this does — a two-actor design
 
 A `SessionStart` hook in Claude Code is a detached OS subprocess: it has no access to the
-session's own authenticated otto-tower MCP connection, and there is no supported way for
+session's own authenticated Savvagent Tower MCP connection, and there is no supported way for
 an external process to borrow it. So this template splits into two actors:
 
-- **`session-start-hook.sh`** (deterministic, no otto-tower access): reads the repo's
+- **`session-start-hook.sh`** (deterministic, no Savvagent Tower access): reads the repo's
   `origin` remote, the current branch, and today's UTC date; produces nothing at all unless
   the remote's host is explicitly opted into beforehand, rejects a remote that isn't shaped
   like an actual git URL, and never carries the branch name itself any further, only a hex
@@ -27,7 +27,7 @@ an external process to borrow it. So this template splits into two actors:
   fenced *data* block, not interpolated into the instruction steps themselves — see
   Security.
 - **The model**, processing that injected context on its own next turn (already
-  otto-tower-authenticated through its own normal tool access), follows the instruction:
+  Savvagent Tower-authenticated through its own normal tool access), follows the instruction:
   `resolve_repo` → `add_job` → branch on status → `claim_jobs` → `complete_job`.
 
 This is **compliance-based, not deterministic** — nothing mechanically guarantees the model
@@ -99,14 +99,14 @@ flat character-class allowlist:
    or owner on its own.
 2. **The hook is inert by default, in every repo, until the developer opts a specific
    `host/owner` in — not merely a host.** Before anything else is built,
-   `session-start-hook.sh` reads `~/.claude/otto-tower-repos` (one `host/owner` pair per
+   `session-start-hook.sh` reads `~/.claude/savvagent-tower-repos` (one `host/owner` pair per
    line, e.g. `github.com/savvagent`) and compares it against the host and owner taken from
    the same grammar match in control 1 above — never from a second, independently-written
    parser (see the note on `extract_host` just below). Absent the file, or no matching
    `host/owner` pair in it, the script exits `0` with no stdout — no `additionalContext` is
    ever produced, so no untrusted byte ever reaches the model's context. This is what closes
    the gap `resolve_repo` cannot: `resolve_repo` is the one step that checks a repo is
-   actually registered with otto-tower, but it is the *model* that calls it, one turn
+   actually registered with Savvagent Tower, but it is the *model* that calls it, one turn
    after the untrusted bytes are already in front of it — merely opening or cloning a repo
    is enough to reach that point otherwise. See Install below; **this file is a required
    setup step, not an optional hardening step.**
@@ -114,7 +114,7 @@ flat character-class allowlist:
    **This is owner-scoped, not host-scoped, on purpose — an earlier version of this
    allowlist held only by accident of what the realistic file content looks like.** A
    host-scoped allowlist's realistic content is one line reading `github.com`, since that is
-   the only host most developers' otto-tower-registered repos live on — but that one line
+   the only host most developers' Savvagent Tower-registered repos live on — but that one line
    arms the hook in *every* github.com repo the developer opens: a coworker's fork, a PR
    checkout, a cloned dependency. That is exactly the population the gate exists to exclude,
    not a narrow slice of it. Scoping the allowlist to `host/owner` (the org or user that
@@ -170,9 +170,9 @@ steps succeeded or failed (see Known Gaps' note on why unconditional silence was
 3. Merge `settings-snippet.json`'s `hooks.SessionStart` entry, as-is, into
    `~/.claude/settings.json`. Its `command` already points at
    `"${HOME:?}"/.claude/hooks/session-start-hook.sh` — no path edit needed for this case.
-4. **Required, not optional: create `~/.claude/otto-tower-repos` and list the
+4. **Required, not optional: create `~/.claude/savvagent-tower-repos` and list the
    `host/owner` pair(s) you want this hook to act on, one per line** — the git host *and*
-   the org/user that actually owns your otto-tower-registered repos (e.g.
+   the org/user that actually owns your Savvagent Tower-registered repos (e.g.
    `github.com/your-org`, or your self-hosted GitLab/Gitea equivalent). A bare hostname is
    not enough and is deliberately not what this file expects — see the Security section's
    note on why a host-scoped allowlist arms the hook in every repo on that host, including
@@ -184,17 +184,18 @@ steps succeeded or failed (see Known Gaps' note on why unconditional silence was
    in any repo, on any remote, including ones that would otherwise resolve correctly. This
    is deliberate: it is what keeps a repo you merely open (clone, check out a PR from, browse
    a coworker's fork of) from ever putting that repo's git state in front of the model before
-   anything has checked it has anything to do with your otto-tower org. Listing a
+   anything has checked it has anything to do with your Savvagent Tower org. Listing a
    `host/owner` pair is not the same as trusting every repo that pair could own — see the
    Security section's note on this — but it is the boundary this template can enforce
-   locally, before any MCP call happens. (This file was named `~/.claude/otto-factory-repos`
-   before the rename to otto-tower; the hook still reads that name when the new one is absent.)
-5. Confirm your coding agent already has a working otto-tower MCP connection (OAuth or a
+   locally, before any MCP call happens. (This file was named `~/.claude/otto-tower-repos`
+   before the Savvagent rebrand, and `~/.claude/otto-factory-repos` before that; the hook still
+   reads those names, in that order, when the new one is absent.)
+5. Confirm your coding agent already has a working Savvagent Tower MCP connection (OAuth or a
    personal access token) — this template assumes that connection exists; it does not
    configure one. See the root `docs/clients/matrix.md` and the console's connect page.
    The connection is added with
-   `claude mcp add --transport http otto-tower https://otto-tower.savvagent.com/mcp`, which
-   exposes the tools as `mcp__otto-tower__*`.
+   `claude mcp add --transport http savvagent-tower https://tower.savvagent.com/mcp`, which
+   exposes the tools as `mcp__savvagent-tower__*`.
    **The connection must carry at least the `repos:read` scope (for `resolve_repo`) and
    the `jobs:write` scope (for `add_job`, `claim_jobs`, and `complete_job`).** A
    least-privilege connection that has either scope but not the other silently no-ops —
@@ -341,7 +342,7 @@ calls themselves always appear in the normal tool-call transcript.
   remote and the allowlist file — confirmed the case-insensitive comparison still matches.
   All four run against the actual script, not asserted from reading it.
 - **The job-lifecycle contract** (`resolve_repo` → `add_job` → `claim_jobs` → `complete_job`,
-  idempotent replay, and the claim fence): exercised directly against a live otto-tower
+  idempotent replay, and the claim fence): exercised directly against a live Savvagent Tower
   server, following the injected instruction's steps by hand exactly as written, using the
   shipped digest-based idempotency key. `resolve_repo` resolved the remote to the
   `otto-factory` slug; `add_job` accepted the key
@@ -408,7 +409,7 @@ calls themselves always appear in the normal tool-call transcript.
   residual is not fully closed by this
   template alone — but what such a forged marker can *contain* is now bounded to a slug string
 and a 16-character hex digest, never free text, so the worst outcome is a misleading but
-   inert audit-log entry, not an instruction reaching a model with real otto-tower
+   inert audit-log entry, not an instruction reaching a model with real Savvagent Tower
    credentials. Even that narrower residue is bounded by `resolve_repo`'s own exact-match
    semantics: the server matches a supplied remote by equality against the org's registered,
    normalized remotes (`crates/of-core/src/repos.rs`), so a path under an opted-in
@@ -441,7 +442,7 @@ and a 16-character hex digest, never free text, so the worst outcome is a mislea
   the developer would see. This is a narrower version of the original gap, not a new one.
 - **Only one developer's marker is recorded per branch per UTC day.** `add_job`'s
   idempotency fingerprint includes `created_by`
-  (`crates/of-core/src/jobs.rs`'s `job_idempotency_fingerprint`), so a *second* otto-tower
+  (`crates/of-core/src/jobs.rs`'s `job_idempotency_fingerprint`), so a *second* Savvagent Tower
   user who opens the same repo and branch the same day does not replay the first user's key:
   the differing fingerprint makes the `add_job` an `idempotency_key_conflict`, which
   rejects the call and — per the silent-failure contract — leaves that second developer

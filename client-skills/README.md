@@ -1,20 +1,20 @@
 # client-skills/
 
-Per-client templates that register a session-start marker job on otto-tower,
+Per-client templates that register a session-start marker job on Savvagent Tower,
 maintained by the community rather than by the server.
 
 ## Purpose
 
-otto-tower's server is coding-agent agnostic by design: it never depends on, or
+Savvagent Tower's server is coding-agent agnostic by design: it never depends on, or
 special-cases, any one client's hook, plugin, or skill system (see the repo's own
 constraint 3 in the root `CLAUDE.md`). But developers still want every coding-agent
-session that starts work in a repo to become visible in otto-tower automatically,
+session that starts work in a repo to become visible in Savvagent Tower automatically,
 rather than relying on the developer (or their agent) to remember to call `add_job` by
 hand.
 
 Since that automation can never live in the server, it lives here instead: a directory
 of small, per-client templates a customer installs into their own agent, distributed
-from this open-source repo so the community — not the otto-tower maintainers — carries
+from this open-source repo so the community — not the Savvagent Tower maintainers — carries
 the burden of keeping each template working as that agent's own hook/skill format
 evolves.
 
@@ -24,9 +24,9 @@ Every template in this directory — whatever shape a given client's automation 
 actually takes — follows the same job lifecycle:
 
 1. **Resolve the repo** via `resolve_repo` (by git remote URL, the normal case). On any
-   failure — the repo isn't registered, there's no otto-tower MCP connection
+   failure — the repo isn't registered, there's no Savvagent Tower MCP connection
    configured, the server is unreachable — stop immediately and take no further
-   otto-tower action. This directory never auto-registers a repo on a resolution
+   Savvagent Tower action. This directory never auto-registers a repo on a resolution
    failure. (What, if anything, may be said about the failure is point 5's job, not
    this one's.)
 2. **Use the resolved canonical `slug` for everything downstream.** The `slug` `resolve_repo`
@@ -45,14 +45,14 @@ actually takes — follows the same job lifecycle:
    `pending` → `claim_jobs` on that exact returned job id, then (only on a successful
    claim) `complete_job`; anything else → stop without guessing.
 5. **Fail silently, always — with one precisely-scoped exception.** Every failure at any
-   step above — a resolution failure, an MCP call erroring, no otto-tower connection
+   step above — a resolution failure, an MCP call erroring, no Savvagent Tower connection
    configured at all — never blocks or delays the developer's session, never retries, and
    never produces a narration of what happened. The actor carrying out the calls (a
    deterministic hook/script, or — for a client whose automation surface can't itself
    reach a credential — the model following an injected instruction) may give **at most
    one short, non-dramatizing line** in a channel that does not interrupt the developer's
    own work: a hook's own stderr, or a single sentence in a model's reply. Nothing about
-   an otto-tower-side failure is ever the substance of a reply or a tool output, error
+   an Savvagent Tower-side failure is ever the substance of a reply or a tool output, error
    detail is never surfaced, and a template is free to stay fully silent instead. This is
    one policy for both shapes — a "script prints to stderr" exception and a "model says
    one line" exception are the same rule applied to the actor that happens to exist.
@@ -81,7 +81,7 @@ actually takes — follows the same job lifecycle:
    arms a hook in every repo on that host, which is rarely the intended population) *before*
    any untrusted byte is used to build model-facing text — the one thing the model can do
    that nothing upstream of it can, is check whether a repo is *actually* related to this
-   otto-tower org (`resolve_repo`), and by the time the model runs that check the
+   Savvagent Tower org (`resolve_repo`), and by the time the model runs that check the
    untrusted bytes are already in its context. See `claude-code/session-start-hook.sh` and
    its README's Security section for a worked example: a hex branch digest instead of the
    raw branch name, a URL grammar (matched with the language's own whole-string regex
@@ -93,20 +93,20 @@ actually takes — follows the same job lifecycle:
 ## What this directory is not
 
 - **Not an auth setup.** Every template here assumes the client already has a working
-  otto-tower MCP connection (OAuth or a personal access token). Configuring that
+  Savvagent Tower MCP connection (OAuth or a personal access token). Configuring that
   connection is `docs/clients/matrix.md`'s job, and the console's connect page's job —
   not this directory's.
 - **Not a way to claim or work real jobs.** These templates only ever create, claim, and
   immediately complete a session-marker job. They never touch `ready`'s general pool of
   claimable work.
-- **Not a server-side feature.** Nothing here changes `crates/*`. otto-tower the server
+- **Not a server-side feature.** Nothing here changes `crates/*`. Savvagent Tower the server
   stays exactly as ignorant of whether, or how, any client automates queue registration
   as it was before this directory existed.
 
 ## Launch scope
 
 This repo's own conformance work (`docs/clients/matrix.md`) has only ever driven Claude Code
-and Copilot CLI live against a real otto-tower server. Shipping a fabricated, never-run
+and Copilot CLI live against a real Savvagent Tower server. Shipping a fabricated, never-run
 template for a client nobody here has actually exercised would read as working when it
 isn't — worse than an honest "not yet, here's the shape a PR should take." So launch ships
 exactly one fully working reference template (Claude Code) and a stub `README.md` for every
@@ -137,10 +137,10 @@ alone with no separate mapping table to keep in sync.
 See `claude-code/README.md` for a worked example — the fullest description of the
 contract above applied to one real client. Claude Code's own template needs a two-actor
 split (a deterministic hook script handing an instruction to the model, which is the
-party that actually holds an authenticated otto-tower MCP connection) because a
+party that actually holds an authenticated Savvagent Tower MCP connection) because a
 `SessionStart` hook process has no access to the session's own MCP credentials. **This
 split is specific to Claude Code's own limitation, not part of the contract itself.** A
-client whose automation surface can itself reach a valid otto-tower credential
+client whose automation surface can itself reach a valid Savvagent Tower credential
 directly should implement the whole sequence above as one deterministic script — no
 model hand-off required. If neither shape fits a given client, propose a different
 mechanism entirely in that client's own `README.md` and PR description; the job-lifecycle
@@ -154,13 +154,13 @@ below:
 - [ ] Names the target client and the minimum version tested against.
 - [ ] Names the exact session-start (or equivalent) mechanism used, and links to that
       client's own documentation for it.
-- [ ] Lists, in order, every otto-tower MCP tool called and with what arguments.
+- [ ] Lists, in order, every Savvagent Tower MCP tool called and with what arguments.
 - [ ] States plainly whether this was verified against a real running `of-server`, or is
       an unverified starting hypothesis (see `docs/clients/matrix.md`'s own register for
       this — "not run" is an acceptable, honest answer; a silent claim of "verified" when
       it wasn't is not).
 - [ ] Follows the silent-failure contract above — never blocks or delays the developer's
-      session on any otto-tower-side failure, never retries, and surfaces nothing beyond
+      session on any Savvagent Tower-side failure, never retries, and surfaces nothing beyond
       (at most) one short, non-dramatizing line in the actor's least-intrusive channel
       (a hook's stderr, or one sentence in a model's reply).
 - [ ] Does not attempt to auto-register an unregistered repo.

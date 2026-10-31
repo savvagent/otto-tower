@@ -1,11 +1,11 @@
 # Client conformance matrix
 
 > **Note (platform split, savvagent/otto-factory#192).** The verification below was recorded when
-> otto-tower was its own authorization server. Registration, authorization, consent, and token
-> exchange are now the otto platform's (`/oauth/*` at its origin); otto-tower serves only
+> Savvagent Tower was its own authorization server. Registration, authorization, consent, and token
+> exchange are now the Savvagent platform's (`/oauth/*` at its origin); Savvagent Tower serves only
 > `/.well-known/oauth-protected-resource`, which names the platform. The `/oauth/*` paths and the
 > `of_auth::oauth` references in the sections below are historical. Clients need only the MCP URL,
-> which is `https://otto-tower.savvagent.com/mcp` (the product was renamed from otto-factory; the old host keeps working, with a deprecation notice, until the published sunset), and should be re-verified against the platform after the cutover. Sessions recorded below ran under the previous name, so their server name and tool prefix read `otto-factory` / `mcp__otto-factory__*` there; a client added today with the commands in this file sees `otto-tower` / `mcp__otto-tower__*`.
+> which is `https://tower.savvagent.com/mcp` (the product was renamed from otto-factory; the old host keeps working, with a deprecation notice, until the published sunset), and should be re-verified against the platform after the cutover. Sessions recorded below ran under the previous name, so their server name and tool prefix read `otto-factory` / `mcp__otto-factory__*` there; a client added today with the commands in this file sees `Savvagent Tower` / `mcp__savvagent-tower__*`.
 
 Milestone 1, task 12. Run on **2026-09-02** against `of-server` built from `46c7896`
 plus the two fixes this run produced (below), serving on one origin with a real
@@ -80,11 +80,11 @@ the `resource_metadata` pointer out of the `WWW-Authenticate` header rather than
 well-known path, and sends `resource` on both the authorize and token requests.
 
 **It will not authorize in a non-interactive session.** `claude -p` reports the server as
-unauthenticated and stops; the flow needs `claude mcp login otto-tower` — or `/mcp` inside
+unauthenticated and stops; the flow needs `claude mcp login savvagent-tower` — or `/mcp` inside
 an interactive session — because Claude Code asks the terminal to fall back to a pasted
 redirect URL when the browser cannot reach it. Once a token is stored, `-p` sessions use it.
 
-**Token path**: `claude mcp add --transport http otto-tower https://otto-tower.savvagent.com/mcp --header "Authorization: Bearer otto_pat_…"`.
+**Token path**: `claude mcp add --transport http savvagent-tower https://tower.savvagent.com/mcp --header "Authorization: Bearer otto_pat_…"`.
 Verified by listing all 28 tools and calling `whoami`.
 
 ## Copilot CLI 1.0.82
@@ -201,8 +201,8 @@ refuses an unrequested version would fail, and the fix belongs upstream in `rmcp
 Recorded code-level fixes that landed after 2026-09-02 and were not re-exercised against a real
 client as part of a conformance run — unlike everything above, which was.
 
-**`server_info` now reports otto-tower's own name/version at `initialize`.** Previously every
-client saw `name: "rmcp"`, `version: "2.0.0"` regardless of what otto-tower was running — the
+**`server_info` now reports Savvagent Tower's own name/version at `initialize`.** Previously every
+client saw `name: "rmcp"`, `version: "2.0.0"` regardless of what Savvagent Tower was running — the
 MCP transport layer's own identity was leaked instead of the server's
 (`docs/specs/2026-09-10-semver-release-design.md` §3).
 
@@ -224,8 +224,8 @@ The `send_message` call in the Copilot CLI run above predates this and was not r
 ```bash
 cargo run -p of-server                      # .env, OF_PUBLIC_URL=http://localhost:8080
 # console: sign up with a passkey, create an org, register a repo, mint a PAT
-claude mcp add --transport http otto-tower http://localhost:8080/mcp
-claude mcp login otto-tower                # interactive terminal required
+claude mcp add --transport http savvagent-tower http://localhost:8080/mcp
+claude mcp login savvagent-tower                # interactive terminal required
 copilot --additional-mcp-config @copilot.json --allow-all-tools -p "call whoami"
 ```
 

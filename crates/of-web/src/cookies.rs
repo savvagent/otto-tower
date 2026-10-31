@@ -12,7 +12,7 @@
 //!
 //! Both are `HttpOnly; Secure; SameSite=Lax; Path=/` with no `Domain`, which is
 //! what the `__Host-` prefix makes a browser enforce: a sibling subdomain
-//! (`otto.savvagent.com` is one) cannot plant them. `Secure` is set
+//! (`savvagent.com` is one) cannot plant them. `Secure` is set
 //! unconditionally, as the platform does for its own cookie: browsers treat
 //! `http://localhost` as a secure context and store `Secure` cookies there, so
 //! local development needs no exemption and a deployment cannot forget one.

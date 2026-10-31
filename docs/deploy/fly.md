@@ -1,22 +1,24 @@
 # Hosting: Fly.io
 
-> **Naming.** The product is **otto-tower** (renamed from otto-factory). The Fly app
-> `otto-factory-mcp`, its `fly.dev` host, the `otto_factory` database and the `OF_*` variables keep
-> their old names on purpose. Production is cut over from `otto-factory.savvagent.com` to
-> `otto-tower.savvagent.com` by the operator procedure in [The rename cutover](#the-rename-cutover);
-> until you have run it, the live host, resource URI and console client are still the old ones.
+> **Naming.** The product is **Savvagent Tower** (formerly otto-tower, before that otto-factory). The
+> Fly app `otto-factory-mcp`, its `fly.dev` host, the `otto_factory` database and the `OF_*` variables
+> keep their old names on purpose (phase 4, savvagent/otto-tower#280). The canonical host is
+> `tower.savvagent.com`, reached by [Runbook: move to tower.savvagent.com](#runbook-move-to-towersavvagentcom);
+> until you have run it, the live host, resource URI, console client and secrets are still the old
+> ones. [The rename cutover](#the-rename-cutover) below is the earlier otto-factory to otto-tower
+> sequence, kept as the historical record.
 
-otto-tower runs as a single persistent machine on Fly.io — no scale-to-zero, because
+Savvagent Tower runs as a single persistent machine on Fly.io — no scale-to-zero, because
 `Watcher::spawn` (of-core) holds a detached `LISTEN` connection that a request-scoped
 serverless model would fight. See `CLAUDE.md` for why the process must stay warm.
 
 ## Topology
 
-otto-tower is a **resource server** of the otto platform (savvagent/otto-factory#192).
+Savvagent Tower is a **resource server** of the Savvagent platform (savvagent/otto-factory#192).
 Two Fly apps, two databases on one Postgres instance, one direction of dependency:
 
 ```
-  otto-platform   (https://otto.savvagent.com)        otto-factory-mcp  (https://otto-tower.savvagent.com)
+  otto-platform   (https://savvagent.com)        otto-factory-mcp  (https://tower.savvagent.com)
   OAuth AS, login, passkeys, orgs, teams, billing     POST /mcp       bearer tokens, introspected at the platform
   db: otto_platform  ◄────────── same instance ─────► db: otto_factory  repos, jobs, leases, messages, trackers
         ▲   POST /oauth/introspect, /internal/*  ◄────────────────  per request (cached 60 s)
@@ -24,7 +26,7 @@ Two Fly apps, two databases on one Postgres instance, one direction of dependenc
         └─► POST /platform/webhooks  (org.deleted, team.deleted, member.removed) ──────────────►
 ```
 
-otto-tower's database holds **no identity**: no users, orgs, teams, memberships, tokens,
+Savvagent Tower's database holds **no identity**: no users, orgs, teams, memberships, tokens,
 sessions, plans, or usage totals, and no foreign key to any of them. Every `org_id`,
 `team_id`, and user id in it is a uuid the platform issued.
 
@@ -46,7 +48,7 @@ sessions, plans, or usage totals, and no foreign key to any of them. Every `org_
   - Connecting role: the one `fly postgres attach` created for this app (a
     **superuser**).
   - `DATABASE_URL` is staged as an app secret.
-- **Migrations are otto-tower's own.** `of_core::migrate` applies
+- **Migrations are Savvagent Tower's own.** `of_core::migrate` applies
   `crates/of-core/migrations` to `otto_factory`. It must never call
   `otto_tenant::Db::migrate`, which applies the platform's own, differently numbered
   history (`tests/guards.rs` fails the build if anything does).
@@ -59,15 +61,15 @@ sessions, plans, or usage totals, and no foreign key to any of them. Every `org_
 |---|---|---|
 | `DATABASE_URL` | Postgres URL for `otto_factory` | `fly postgres attach` |
 | `OF_ENCRYPTION_KEY` | 32 bytes base64; seals tracker credentials at rest | `openssl rand -base64 32`. Fed unchanged to `otto_tenant::crypto::Cipher`. |
-| `OF_INTROSPECTION_SECRET` | `otto_rs_…`; authenticates every call this service makes to the platform | Printed once by `resource rotate-secret` (`resource register` issues none) |
-| `OF_PLATFORM_WEBHOOK_SECRET` | `otto_whsec_…`; verifies the platform's lifecycle webhooks | Printed once by `resource set-webhook` |
+| `OF_INTROSPECTION_SECRET` | `sav_rs_…`; authenticates every call this service makes to the platform | Printed once by `resource rotate-secret` (`resource register` issues none) |
+| `OF_PLATFORM_WEBHOOK_SECRET` | `sav_whsec_…`; verifies the platform's lifecycle webhooks | Printed once by `resource set-webhook` |
 
 Non-secret settings (`OF_PUBLIC_URL`, `OF_RESOURCE_URI`, `OF_PLATFORM_URL`,
 `OF_CONSOLE_CLIENT_ID`, …) live in `fly.toml`'s `[env]`.
 
 ## Registering with the platform
 
-This is the first-time setup for a new deployment, written for the otto-tower URI. Production
+This is the first-time setup for a new deployment, written for the Savvagent Tower URI. Production
 was registered under the old URI before the rename; it is moved by *The rename cutover* below
 (`resource rename-service`, `resource rename`), not re-registered.
 
@@ -78,17 +80,17 @@ credential `resource rotate-secret` issues for it. Registration is an **operator
 
 ```bash
 # On the platform (a machine with otto-platform-server and its OTTO_* environment):
-otto-platform-server resource register https://otto-tower.savvagent.com/mcp \
-  --name otto-tower \
+otto-platform-server resource register https://tower.savvagent.com/mcp \
+  --name "Savvagent Tower" \
   --scopes jobs:read,jobs:write,repos:read,repos:write,messages,trackers,org:admin \
   --default-scopes jobs:read,repos:read
 
-otto-platform-server resource rotate-secret https://otto-tower.savvagent.com/mcp
+otto-platform-server resource rotate-secret https://tower.savvagent.com/mcp
 #   -> prints the introspection secret ONCE: set it as OF_INTROSPECTION_SECRET
 #      (`register` issues no credential; `rotate-secret` is also how to replace it)
 
-otto-platform-server resource set-webhook https://otto-tower.savvagent.com/mcp \
-  https://otto-tower.savvagent.com/platform/webhooks
+otto-platform-server resource set-webhook https://tower.savvagent.com/mcp \
+  https://tower.savvagent.com/platform/webhooks
 #   -> prints the webhook signing secret ONCE: set it as OF_PLATFORM_WEBHOOK_SECRET
 ```
 
@@ -116,8 +118,8 @@ is an operator step on the platform:
 ```bash
 # Run on the platform's machine (it needs the platform's OTTO_* environment):
 fly ssh console -a otto-platform -C \
-  'otto-platform-server client register --name "otto-tower console" \
-     --redirect-uri https://otto-tower.savvagent.com/auth/callback --first-party'
+  'otto-platform-server client register --name "Savvagent Tower console" \
+     --redirect-uri https://tower.savvagent.com/auth/callback --first-party'
 #   -> prints the client_id: set it as OF_CONSOLE_CLIENT_ID
 ```
 
@@ -135,7 +137,7 @@ Sessions live in the `console_sessions` table (access and refresh tokens sealed 
 `OF_ENCRYPTION_KEY`; the cookie itself is stored only as a SHA-256). Because the key seals
 them, **rotating `OF_ENCRYPTION_KEY` signs every console user out**. The platform rotates a
 refresh token on every use and revokes the whole login if a spent one is replayed, so
-otto-tower refreshes under a row lock and each refresh happens exactly once, even across
+Savvagent Tower refreshes under a row lock and each refresh happens exactly once, even across
 machines.
 
 ## Usage metering
@@ -167,7 +169,7 @@ not in this body (the route is unauthenticated and the figure spans every tenant
 `SELECT count(*) … FROM usage_outbox` above, or from the shipper's `rows_waiting=N` log line. Readiness stays `200` on
 purpose: every replica shares the platform's answer, so failing the probe would take the API out
 of rotation over a billing delay that loses nothing. Alert on the body (for example
-`curl -s https://otto-tower.savvagent.com/readyz | jq -e '.usage.meters_declared'` exits non-zero
+`curl -s https://tower.savvagent.com/readyz | jq -e '.usage.meters_declared'` exits non-zero
 when it is `false`), not the status code. Fly's check on `/readyz` is unaffected. The reason
 (`service_not_set`, a refused meter) is in the logs.
 
@@ -701,14 +703,16 @@ Order matters; the platform goes first.
 registered at the platform and its two secrets are set; the console additionally needs
 `OF_CONSOLE_CLIENT_ID`. The product sends no email and holds no accounts: signing in,
 passkeys, recovery, invitations, SSO, members, and teams are the platform's, and the
-console links there. See the platform-split checklist for first-time setup and *The rename cutover* for moving to the otto-tower host.
+console links there. See the platform-split checklist for first-time setup and the move-to-`tower.savvagent.com` runbook for the host.
 
 ## The hostname
 
-The hostname below is the otto-tower one. *The rename cutover* moved production to it;
-`otto-factory.savvagent.com` is the deprecated legacy host (`OF_LEGACY_HOSTS`) until the sunset.
+The hostname below is the Savvagent Tower one. The move to it is the runbook at the end of this
+file; `otto-tower.savvagent.com` is the previous host, accepted through `OF_ALLOWED_HOSTS` and a live
+platform alias until 2027-06-30. `otto-factory.savvagent.com` is retired (its sunset passed and the
+platform alias is dropped; `OF_LEGACY_HOSTS` is no longer set).
 
-The public hostname is **`otto-tower.savvagent.com`**, and the app answers on
+The public hostname is **`tower.savvagent.com`**, and the app answers on
 `otto-factory-mcp.fly.dev` without advertising it. No Cloudflare Worker or proxy sits in front:
 the name resolves straight to the Fly app. DNS is at Namecheap, with an `A` record to the app's
 shared IPv4 and an `AAAA` record to its dedicated IPv6. Do not copy the addresses from here; read
@@ -716,14 +720,14 @@ them from Fly, which is the source of truth:
 
 ```bash
 fly ips list -a otto-factory-mcp          # v4 public ingress (shared), v6 public ingress (dedicated)
-dig +short otto-tower.savvagent.com A   # must match the v4
-dig +short otto-tower.savvagent.com AAAA   # must match the v6
+dig +short tower.savvagent.com A   # must match the v4
+dig +short tower.savvagent.com AAAA   # must match the v6
 ```
 
 (As of 2026-10-21 they are `66.241.125.222` and `2a09:8280:1::1aa:4d42:0`; an address this file
 once listed had gone stale, which is why it no longer pins them.)
 
-`fly certs add otto-tower.savvagent.com -a otto-factory-mcp` issues and renews the
+`fly certs add tower.savvagent.com -a otto-factory-mcp` issues and renews the
 certificate; nothing else in DNS is needed, because the dedicated IPv6 is what Fly
 validates ownership against.
 
@@ -734,7 +738,7 @@ does not invalidate anyone's credentials (it does require re-registering the res
 platform under the new URI, and re-authorizing clients).
 
 A later move behind a Cloudflare Worker (not made today) would keep this same hostname: a Worker custom
-domain serves `otto-tower.savvagent.com` directly and proxies to the Fly app, so
+domain serves `tower.savvagent.com` directly and proxies to the Fly app, so
 `OF_ORIGIN` becomes `otto-factory-mcp.fly.dev` and `OF_PUBLIC_URL` does not
 change. See `cloudflare.md`, whose `OF_ALLOWED_HOSTS` trap is exactly about that
 split.
@@ -779,3 +783,126 @@ check before routing traffic to the machine.
   is billing the platform was never told about, and each one is also logged at error level.
 - `platform_events` markers older than 30 days and expired `removed_members` tombstones are swept
   hourly. `deleted_orgs` is permanent (the platform never reuses an org id).
+
+## Runbook: move to tower.savvagent.com (#279, human-only, Rob)
+
+Phase 3 of the Savvagent rebrand (savvagent/otto-platform#128) for this service. The PR that
+closes #279 changes the code and `fly.toml`; the steps below are the human part. After them the
+service is Savvagent Tower at `https://tower.savvagent.com/mcp`, its MCP server calls itself
+`savvagent-tower`, and it authenticates to the platform with `sav_rs_` and `sav_whsec_` secrets.
+The billing service slug (`otto-tower`) and the meter `otto-tower/jobs_completed` do not change;
+neither do the `OF_*` variable names, the Fly app (`otto-factory-mcp`), the database or the
+crates (phase 4, #280).
+
+What the platform already has (phase 2): the resource registry lists this service as
+`https://tower.savvagent.com/mcp` ("Savvagent Tower"), with `https://otto-tower.savvagent.com/mcp`
+kept as a live alias until 2027-06-30, so the platform accepts the service under either URI and
+the current `otto_rs_` credential keeps working across the deploy. The `otto-factory` alias is
+dropped, which is why this change removes `OF_LEGACY_HOSTS` and `OF_LEGACY_SUNSET` (the sunset,
+2026-10-22, has passed; the legacy-host support stays in `of-server`, only the values go). The
+`tower.savvagent.com` certificate is issued.
+
+**R0. Look first (read-only).**
+
+```bash
+curl -fsS https://tower.savvagent.com/healthz                     # ok: DNS and certificate
+fly certs list -a otto-factory-mcp                                # tower.savvagent.com Issued, and the old host
+fly secrets list -a otto-factory-mcp   # no OF_PUBLIC_URL / OF_RESOURCE_URI / OF_ALLOWED_HOSTS secret overriding fly.toml
+fly ssh console -a otto-platform -C 'otto-platform-server resource show https://tower.savvagent.com/mcp'
+                                    # the canonical URI, its old one a `live` alias, the webhook URL
+```
+
+**R1. Flip the Fly env: merge the PR.** This is a release-please repository: merging the feature PR
+does not deploy. The deploy happens when the release PR that carries it merges, so do R1 by
+merging that release PR (CI deploys it). The deploy changes only `fly.toml` `[env]`:
+
+| Variable | Before | After |
+|---|---|---|
+| `OF_PUBLIC_URL` | `https://otto-tower.savvagent.com` | `https://tower.savvagent.com` |
+| `OF_RESOURCE_URI` | `https://otto-tower.savvagent.com/mcp` | `https://tower.savvagent.com/mcp` |
+| `OF_ALLOWED_HOSTS` | (unset) | `otto-factory-mcp.fly.dev,otto-tower.savvagent.com` |
+| `OF_LEGACY_HOSTS` | `otto-factory.savvagent.com` | (removed) |
+| `OF_LEGACY_SUNSET` | `2026-10-22T00:00:00Z` | (removed) |
+| `OF_CONSOLE_CLIENT_ID` | `otto_client_8ClmY61CJPC5BJHULc1Kug15hbSvw0vAy6CxUuXMZUY` | `sav_client_XRACC-VcMXZQpX7jG_8Oplm9IQNTV-KrK6KdxJE-MCk` |
+
+`otto-tower.savvagent.com` stays an allowed `/mcp` host, so clients still configured with it keep
+working until the platform turns old hosts into redirects (savvagent/otto-platform#135). The
+`fly.dev` host is not needed today (no Cloudflare Worker fronts this app, so nothing reaches it with
+that `Host`), but it is our own name and the Worker trap in `docs/deploy/cloudflare.md` makes it
+mandatory the day a Worker is put in front, so it is listed. The new console client is the
+public client registered at the platform as "Savvagent Tower console", redirect
+`https://tower.savvagent.com/auth/callback`. Then check:
+
+```bash
+curl -fsS https://tower.savvagent.com/readyz                      # ready
+curl -fsS https://tower.savvagent.com/.well-known/oauth-protected-resource
+  # "resource": "https://tower.savvagent.com/mcp", "resource_name": "Savvagent Tower"
+fly logs -a otto-factory-mcp --no-tail   # "the Savvagent platform accepted this service's credential"
+```
+
+The protected-resource metadata names the new URI on either host. A client that signs in afresh
+through the old URL and checks that the metadata's `resource` matches the URL it called (RFC 9728
+section 3.3) refuses it; step R3 moves the client to the new URL.
+
+**R2. Rotate both secrets to `sav_`.** Both commands invalidate the old value the moment they print
+the new one, so run them back to back and set the two secrets in one `fly secrets set` (one
+restart). Until the restart, calls fail (introspection refused) and webhook deliveries fail their
+signature check; the platform retries deliveries with backoff, so none is lost. The webhook must
+name the new host before #135: the platform does not follow redirects.
+
+```bash
+platform() { fly ssh console --quiet -a otto-platform -C "otto-platform-server resource $*" | tr -d '\r'; }
+
+WHSEC="$(platform set-webhook https://tower.savvagent.com/mcp https://tower.savvagent.com/platform/webhooks | grep -E '^sav_whsec_')"
+RS="$(platform rotate-secret https://tower.savvagent.com/mcp | grep -E '^sav_rs_')"
+[ -n "$WHSEC" ] && [ -n "$RS" ] && echo both captured || echo STOP: run the missing one again
+
+fly secrets set -a otto-factory-mcp OF_PLATFORM_WEBHOOK_SECRET="$WHSEC" OF_INTROSPECTION_SECRET="$RS"
+unset WHSEC RS
+
+fly secrets list -a otto-factory-mcp             # both Deployed, new digests
+curl -fsS https://tower.savvagent.com/readyz     # ready (a rejected secret is a 503 here)
+fly ssh console -a otto-platform -C 'otto-platform-server resource show https://tower.savvagent.com/mcp'
+                                                 # webhook=https://tower.savvagent.com/platform/webhooks
+```
+
+If a capture comes back empty, the command still ran and invalidated the old value: run that one
+command again (each run issues a fresh secret) and set it. Neither secret can be read back. The
+values live only in the shell variables, so they never reach shell history or the process list of
+anything but `fly`.
+
+**R3. Move your MCP client (`~/.claude.json`).** The server name changes with the MCP server name,
+so the tools become `mcp__savvagent-tower__*`. Everything that names `mcp__otto-tower__*` must change
+in the same sitting, or it silently stops matching:
+
+- your `~/.claude/CLAUDE.md` and any project `CLAUDE.md` that names the tools;
+- the hook matchers in `~/.claude/settings.json` (for example a `PreToolUse` matcher on
+  `mcp__otto-tower__*`);
+- `~/.claude/hooks/tower-lease-check.sh`;
+- the session-start hook (`client-skills/claude-code/session-start-hook.sh` and its
+  instructions) and any plugin that carries Tower skills (rbh-plugins). Rename the opt-in file
+  `~/.claude/otto-tower-repos` to `~/.claude/savvagent-tower-repos` when convenient; the hook reads
+  the old name when the new one is absent.
+
+```bash
+claude mcp remove otto-tower --scope user
+claude mcp add --transport http --scope user savvagent-tower https://tower.savvagent.com/mcp
+```
+
+Then `/mcp` in a Claude Code session, pick `savvagent-tower`, and **Authenticate**. The agent doing
+the switch loses its Tower tools until the client restarts, so do not do this mid-job: release your
+claims and leases first, and finish the checklist above from a session that does not need them.
+
+**R4. Verify `whoami` through the new host.** Restart the client and call the `savvagent-tower`
+`whoami` tool: it answers with your org and user through `https://tower.savvagent.com/mcp`.
+
+**GitHub App.** If the tracker GitHub App has a setup or callback URL configured
+(`/trackers/callback`), move it to `https://tower.savvagent.com/trackers/callback` in the App's
+settings. The old host keeps serving until #135, so an install started before the change still
+completes.
+
+**Rolling back.** Revert the release: the previous release serves `otto-tower.savvagent.com/mcp`
+again, which the platform accepts as an alias until 2027-06-30. The `sav_` secrets belong to the
+server, not to a URI, so they keep working on either release; nothing in R2 needs undoing. Move the
+webhook back only if the old host is still served directly (before #135). `OF_CONSOLE_CLIENT_ID`
+reverts with `fly.toml`; its old client keeps the old redirect URI.

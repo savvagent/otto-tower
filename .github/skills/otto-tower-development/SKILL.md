@@ -1,24 +1,24 @@
 ---
 name: otto-tower-development
-description: Use when developing any feature or fix in the otto-tower repository (the hosted multi-tenant MCP server for coordinating agentic coding work) end-to-end — from a GitHub issue or plain task brief, through ship and verify, fully autonomously with no mid-run questions. Bundles the plan-by-plan discipline (committed design specs in docs/specs/ and implementation plans in docs/plans/), the Rust workspace conventions (of-core owns all SQL, the two-guard tenant isolation rule, the passkey auth spine, substrate-not-workflow scope discipline), autonomous spec generation, plan generation, task-by-task implementation, PR review loops, verification, and close-out. For other repositories use general-development; for fs-ci use ce-development.
+description: Use when developing any feature or fix in the Savvagent Tower repository (the hosted multi-tenant MCP server for coordinating agentic coding work) end-to-end — from a GitHub issue or plain task brief, through ship and verify, fully autonomously with no mid-run questions. Bundles the plan-by-plan discipline (committed design specs in docs/specs/ and implementation plans in docs/plans/), the Rust workspace conventions (of-core owns all SQL, the two-guard tenant isolation rule, the passkey auth spine, substrate-not-workflow scope discipline), autonomous spec generation, plan generation, task-by-task implementation, PR review loops, verification, and close-out. For other repositories use general-development; for fs-ci use ce-development.
 ---
 
 # Otto-Tower Development — Autonomous End-to-End
 
-Autonomous, plan-driven feature/fix workflow for the **otto-tower** repository (the hosted,
+Autonomous, plan-driven feature/fix workflow for the **Savvagent Tower** repository (the hosted,
 multi-tenant MCP server for coordinating agentic coding work). Walks from intake (a GitHub issue OR
 a plain task brief) through spec → plan → implement → PR → review → merge → verify → close, with no
 mid-run human questions. Returns control only when the work is shipped + verified, or on a true
 blocker.
 
-This is the **otto-tower-specific sibling** of `general-development`. Same spine; the
+This is the **Savvagent Tower-specific sibling** of `general-development`. Same spine; the
 repo-agnostic convention-discovery phase is replaced by the hardcoded conventions below (Rust
 workspace, plan-by-plan docs, the tenant-isolation and passkey spines), the way `ce-development`
 hardcodes fs-ci's. If you are working in any other repository, use `general-development`.
 
 ## Why this shape
 
-The spine mirrors what this repository builds: otto-tower is a **coordination substrate** — a
+The spine mirrors what this repository builds: Savvagent Tower is a **coordination substrate** — a
 queue of jobs anchored on repos, where the specification of work lives outside the server in the
 customer's own skills. The workflow below is that separation applied to the repo itself: a design
 spec and a plan document first (the specification), implementation against them (the mechanical
@@ -99,7 +99,7 @@ These hold for every run of this skill, no exceptions, no fast-path carve-outs:
 
 | Situation                                                             | Use                                                      |
 | --------------------------------------------------------------------- | -------------------------------------------------------- |
-| Any feature/fix in otto-tower, full lifecycle, no human in the loop | **otto-tower-development** (this skill)                |
+| Any feature/fix in Savvagent Tower, full lifecycle, no human in the loop | **otto-tower-development** (this skill)                |
 | Work in another repository                                            | `general-development`                                    |
 | Work in fs-ci / Contract Explorer                                     | `ce-development`                                         |
 | Already mid-implementation, just need to address PR review comments   | the Review-Response step here (Phase 4 step 9)           |
@@ -165,11 +165,11 @@ triviality, not "I think this is small."
 | "It's only one bullet, hardly a substantial rewrite"       | The rule doesn't turn on size — any change to dispatch/orchestration logic under `.github/skills/` disqualifies, however small. Grading your own edit as "not substantial" is the exact rationalization this section exists to refuse. Spec first (a prose/typo fix is the only carve-out). |
 | "No spec, but I'll still write a one-line plan"            | Either the work needs a plan (then write the spec too) or it doesn't (then it doesn't need the plan either — and per house style, even fast-path keeps a minimal plan doc). |
 
-## Repository Conventions (otto-tower)
+## Repository Conventions (Savvagent Tower)
 
 | Convention                 | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Repo                       | `savvagent/otto-factory` — pass `--repo savvagent/otto-factory` on `gh` commands run from a worktree or outside the checkout. The product is otto-tower but the GitHub repo is still named `savvagent/otto-factory` until a human renames it (GitHub redirects the old name afterwards); update these slugs then.                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Repo                       | `savvagent/otto-factory` — pass `--repo savvagent/otto-factory` on `gh` commands run from a worktree or outside the checkout. The product is Savvagent Tower but the GitHub repo is still named `savvagent/otto-factory` until a human renames it (GitHub redirects the old name afterwards); update these slugs then.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Trunk                      | `master`. **All** work happens in a worktree; **all** master-branch changes land via merged PRs. No direct commits, pushes, or merges to `master` outside a PR (Non-Negotiable Rules 1–2).                                                                                                                                                                                                                                                                                                                                                                  |
 | Worktree                   | **Required.** `git worktree add .worktrees/<branch> -b <branch> origin/master` — the worktrees live **inside the repo** at `.worktrees/<branch>`, not as sibling directories. Confirm `.worktrees/` is gitignored before creating the first one — **never `git add .`** in the main checkout (a nested worktree's contents, including a developer-local `.env`, could be staged). Branch off `origin/master`, never local `master` (see Phase 0 trunk-sync). Every code edit, commit, and push happens from inside this worktree.                           |
 | Branch name                | `<area>/<kebab-slug>`, matching the repo's history — `passkeys/webauthn`, `deploy/isolation-startup-check`, `ci/github-actions`. Area is a crate short name (`core`, `auth`, `mcp`, `billing`, `trackers`, `web`, `server`) or a theme (`deploy`, `ci`, `docs`).                                                                                                                                                                                                                                                                                            |
@@ -300,7 +300,7 @@ explains the reasoning behind each at length — read it, and treat the list her
 
 ## Tracker abstraction (GitHub Issues or ticketless)
 
-otto-tower uses **GitHub Issues when an issue exists, ticketless otherwise.** There is no JIRA.
+Savvagent Tower uses **GitHub Issues when an issue exists, ticketless otherwise.** There is no JIRA.
 Resolve once at intake and stay on that path for the whole task.
 
 > **One-time bootstrap.** The `status:*` tracker labels below are NOT GitHub defaults, and this repo
@@ -805,7 +805,7 @@ This is how the plan-by-plan record stays current — the docs ARE the project's
 
 ## Phase 5 — Deploy, verify, close
 
-**CI exists; a deploy pipeline does not.** otto-tower is one Axum binary (`of-server`) deployed to
+**CI exists; a deploy pipeline does not.** Savvagent Tower is one Axum binary (`of-server`) deployed to
 Fly.io from `Dockerfile` + `fly.toml`, with a Cloudflare Worker in front (`web/wrangler.jsonc`) and
 PostgreSQL behind it, migrated at startup by `of-core`'s embedded migrations. `.github/workflows/ci.yml`
 gates every PR and every push to `master`; deploys are manual and out of band. Phase 5 is: confirm
