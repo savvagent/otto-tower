@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/savvagent/otto-tower/compare/v0.17.0...v0.18.0) (2026-10-31)
+
+
+### Features
+
+* redirect the old hosts to tower.savvagent.com ([#286](https://github.com/savvagent/otto-tower/issues/286)) ([864e772](https://github.com/savvagent/otto-tower/commit/864e7725e04eb56b9fb3ab6b442fcce9130d9c47))
+
 ## [0.17.0](https://github.com/savvagent/otto-tower/compare/v0.16.1...v0.17.0) (2026-10-31)
 
 
