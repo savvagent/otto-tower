@@ -1,0 +1,58 @@
+[package]
+name = "tower-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# A library as well as a binary, so the router assembly is reachable from an
+# integration test. A `main.rs` that can only be exercised by starting a process
+# is a `main.rs` whose route collisions are found by a deployment.
+[lib]
+name = "tower_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tower-server"
+path = "src/main.rs"
+
+[dependencies]
+tower-core.workspace = true
+savvagent-tenant.workspace = true
+savvagent-resource.workspace = true
+tower-mcp.workspace = true
+tower-billing.workspace = true
+tower-trackers.workspace = true
+tower-web.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+http.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+uuid.workspace = true
+dotenvy.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+# Integration tests link tower-server as an external crate, so anything they name
+# directly has to be declared here too.
+tower-core.workspace = true
+tower-billing.workspace = true
+tower-testkit.workspace = true
+savvagent-tenant.workspace = true
+savvagent-resource.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tower.workspace = true
+http.workspace = true
+axum.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true

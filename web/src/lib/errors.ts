@@ -21,7 +21,7 @@ import { m } from './paraglide/messages';
 /**
  * Every code this bundle has a translation for.
  *
- * Enumerated from `of_core::Error::code()`, `of-web`'s own error codes, and the
+ * Enumerated from `tower_core::Error::code()`, `tower-web`'s own error codes, and the
  * two codes `api.ts` mints for itself. Deliberately not
  * exhaustive over what the server *could* send — see the fallback above. A code
  * missing from here is a sentence in English, not a missing sentence.
@@ -31,7 +31,7 @@ const KNOWN: Record<string, () => string> = {
   network: () => m.error_network(),
   unknown: () => m.error_unknown(),
 
-  // ---- of-core ----
+  // ---- tower-core ----
   job_not_found: () => m.error_job_not_found(),
   repo_not_found: () => m.error_repo_not_found(),
   repo_unresolved: () => m.error_repo_unresolved(),
@@ -48,7 +48,7 @@ const KNOWN: Record<string, () => string> = {
   invalid_argument: () => m.error_invalid_argument(),
   internal_error: () => m.error_internal(),
 
-  // ---- of-web ----
+  // ---- tower-web ----
   unauthenticated: () => m.error_unauthenticated(),
   org_session_mismatch: () => m.error_org_session_mismatch(),
   console_login_disabled: () => m.error_console_login_disabled(),

@@ -1,0 +1,46 @@
+[package]
+name = "tower-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tower-core.workspace = true
+savvagent-tenant.workspace = true
+savvagent-resource.workspace = true
+tower-billing.workspace = true
+tower-trackers.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+axum.workspace = true
+http.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+tokio.workspace = true
+futures.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+# Integration tests link tower-mcp as an external crate, so anything they name
+# directly has to be declared here too.
+tokio = { workspace = true, features = ["full"] }
+tower-core.workspace = true
+savvagent-tenant.workspace = true
+savvagent-resource.workspace = true
+rmcp.workspace = true
+tower-billing.workspace = true
+sqlx.workspace = true
+http.workspace = true
+axum.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+# `ServiceExt::oneshot`, for driving the assembled router without binding a port.
+tower = { workspace = true, features = ["util"] }
+tower-testkit.workspace = true

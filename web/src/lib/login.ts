@@ -1,7 +1,7 @@
 /**
  * Sending the browser through sign-in.
  *
- * The console does not sign anyone in itself. `of-web` runs an OAuth
+ * The console does not sign anyone in itself. `tower-web` runs an OAuth
  * authorization-code + PKCE flow against the Savvagent platform (`/auth/login` →
  * platform → `/auth/callback`) and, when it finishes, sets the session cookie and
  * redirects back. This module only builds the URL that starts it and decides when

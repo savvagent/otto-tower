@@ -6,7 +6,7 @@
  * kept out of it because the queue and repos pages have the same problem and
  * should not re-derive these rules one at a time.
  *
- * **Why polling, when the server already has a change stream.** `of-core`'s
+ * **Why polling, when the server already has a change stream.** `tower-core`'s
  * `watch.rs` exists so agents can react to queue changes without polling, and
  * the MCP `watch` tool carries the same data this page reads. The console
  * deliberately does not use it: a stream to the browser would need a new
@@ -55,7 +55,7 @@
  *    the server's idle timeout means what it says again.
  *
  * `load` is called on a timer, so it must be cheap and idempotent. Whether what
- * it does is billable is a property of the caller: `of-billing` meters MCP tool
+ * it does is billable is a property of the caller: `tower-billing` meters MCP tool
  * calls, and the console's `GET`s are not among them.
  */
 

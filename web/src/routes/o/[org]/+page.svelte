@@ -35,7 +35,7 @@
    * to spread the load, would let the tiles and the job list come from different
    * ticks — a count beside a job that has already finished.
    *
-   * Nothing polled here is billable: `of-billing` meters MCP tool calls, and
+   * Nothing polled here is billable: `tower-billing` meters MCP tool calls, and
    * these are console `GET`s.
    */
 

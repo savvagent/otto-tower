@@ -1,16 +1,16 @@
 /**
  * The console API's wire types.
  *
- * Hand-written, and mirroring `crates/of-web/src/openapi.rs` rather than
+ * Hand-written, and mirroring `crates/tower-web/src/openapi.rs` rather than
  * generated from it. Generation would be the reflex; it is the wrong trade at
  * this size. A generator has to run in CI to be worth anything, and until
- * `of-server` binds a port there is no document to fetch — so the "generated"
+ * `tower-server` binds a port there is no document to fetch — so the "generated"
  * file would in practice be a checked-in artifact nobody regenerates, which is
  * the same hand-written file with a comment claiming otherwise.
  * `GET /api/openapi.json` is the authority either way; this is a transcription
  * of it, and `npm run check` fails when a page reads a field not declared here.
  *
- * Every name is camelCase because every response body is: `of-web`'s structs
+ * Every name is camelCase because every response body is: `tower-web`'s structs
  * carry `#[serde(rename_all = "camelCase")]`.
  */
 

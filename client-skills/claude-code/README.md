@@ -275,7 +275,7 @@ way, so the real reason for `startup`-only is the first one, not a defeat of ide
      the `add_job` → `claim_jobs` window this is mitigating, not closing)
    - `description`: a fixed, literal string — identical on every call, since `add_job`
      errors if a replayed idempotency key's other arguments differ
-   - `agentType`: `"session-marker"` — a routing *hint* (`of-mcp`'s own docs are explicit
+   - `agentType`: `"session-marker"` — a routing *hint* (`tower-mcp`'s own docs are explicit
      that `agentType` is "never enforced — any agent may claim any job"). An agent that
      filters its own `ready`/`claim_jobs` calls by its own `agentType` will not see this job;
      one that queries with no `agentType` filter at all (as this repo's own
@@ -298,7 +298,7 @@ way, so the real reason for `startup`-only is the first one, not a defeat of ide
 4. On a successful claim: `complete_job` on that same job id, with
    `result: "session marker — no work performed"` **and `expectedAttempts` set to the
    `attempts` value from that claim_jobs response.** This is the claim-generation fence
-   (`crates/of-core/src/jobs.rs`'s `complete_job`): were the model's turn delayed past the
+   (`crates/tower-core/src/jobs.rs`'s `complete_job`): were the model's turn delayed past the
    900s claim TTL and a later invocation reclaimed the job, supplying the stale `attempts`
    makes the `complete_job` fail instead of finalizing someone else's newer claim.
 
@@ -393,7 +393,7 @@ calls themselves always appear in the normal tool-call transcript.
   `"session marker — do not claim"` rather than the earlier `"session marker"`, so a human
   or an agent that inspects a job before acting on it has a louder, harder-to-miss signal in
   the field it reads first. **Neither is a guarantee.** Closing this fully means updating
-  `otto-tower-worker` (or `of-mcp`) to filter by `agentType` — out of scope for this
+  `otto-tower-worker` (or `tower-mcp`) to filter by `agentType` — out of scope for this
   change, which touches no `crates/*` or `.github/skills/` dispatch logic. Until that
   happens: **do not install this template in a working copy where an unfiltered
   `otto-tower-worker` (or an equivalent no-`agentType`-filter claimer) is also active
@@ -412,7 +412,7 @@ and a 16-character hex digest, never free text, so the worst outcome is a mislea
    inert audit-log entry, not an instruction reaching a model with real Savvagent Tower
    credentials. Even that narrower residue is bounded by `resolve_repo`'s own exact-match
    semantics: the server matches a supplied remote by equality against the org's registered,
-   normalized remotes (`crates/of-core/src/repos.rs`), so a path under an opted-in
+   normalized remotes (`crates/tower-core/src/repos.rs`), so a path under an opted-in
    `host/owner` that the org never registered — an attacker-cloned `otto-tower-clone.git`
    — resolves to nothing and the instruction chain stops there.
    `metadata.branch` is `branch_digest` (hex) for exactly this reason.
@@ -435,14 +435,14 @@ and a 16-character hex digest, never free text, so the worst outcome is a mislea
   does not cover: percent-encoded paths (`a%20b.git`), a `~` in a path, or a scheme other
   than the three forms git itself produces (`https`, `ssh://`, scp-like) are all rejected,
   so a developer using such a remote just gets no marker.
-- **`idempotencyKey` is not unconstrained length.** `crates/of-core/src/idempotency.rs`
+- **`idempotencyKey` is not unconstrained length.** `crates/tower-core/src/idempotency.rs`
   enforces a 200-character cap; `branch_digest` is now a fixed 16 hex characters, so the only
   remaining variable-length component is the resolved slug — an unusually long slug could
   still reach the cap, silently producing no marker for that one repo rather than an error
   the developer would see. This is a narrower version of the original gap, not a new one.
 - **Only one developer's marker is recorded per branch per UTC day.** `add_job`'s
   idempotency fingerprint includes `created_by`
-  (`crates/of-core/src/jobs.rs`'s `job_idempotency_fingerprint`), so a *second* Savvagent Tower
+  (`crates/tower-core/src/jobs.rs`'s `job_idempotency_fingerprint`), so a *second* Savvagent Tower
   user who opens the same repo and branch the same day does not replay the first user's key:
   the differing fingerprint makes the `add_job` an `idempotency_key_conflict`, which
   rejects the call and — per the silent-failure contract — leaves that second developer

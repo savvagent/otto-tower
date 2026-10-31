@@ -1,6 +1,6 @@
 ---
 name: otto-tower-development
-description: Use when developing any feature or fix in the Savvagent Tower repository (the hosted multi-tenant MCP server for coordinating agentic coding work) end-to-end — from a GitHub issue or plain task brief, through ship and verify, fully autonomously with no mid-run questions. Bundles the plan-by-plan discipline (committed design specs in docs/specs/ and implementation plans in docs/plans/), the Rust workspace conventions (of-core owns all SQL, the two-guard tenant isolation rule, the passkey auth spine, substrate-not-workflow scope discipline), autonomous spec generation, plan generation, task-by-task implementation, PR review loops, verification, and close-out. For other repositories use general-development; for fs-ci use ce-development.
+description: Use when developing any feature or fix in the Savvagent Tower repository (the hosted multi-tenant MCP server for coordinating agentic coding work) end-to-end — from a GitHub issue or plain task brief, through ship and verify, fully autonomously with no mid-run questions. Bundles the plan-by-plan discipline (committed design specs in docs/specs/ and implementation plans in docs/plans/), the Rust workspace conventions (tower-core owns all SQL, the two-guard tenant isolation rule, the passkey auth spine, substrate-not-workflow scope discipline), autonomous spec generation, plan generation, task-by-task implementation, PR review loops, verification, and close-out. For other repositories use general-development; for fs-ci use ce-development.
 ---
 
 # Otto-Tower Development — Autonomous End-to-End
@@ -45,7 +45,7 @@ condition.
 **Green tests are not the same as work-done.** `cargo test --workspace` does not validate the
 container image (`Dockerfile`/`fly.toml`), the console SPA (`web/` — its gates are `npm run check`,
 `npm run lint`, `npm test`, `npm run build`), the Cloudflare Worker in front of it (`web/worker/`),
-or a fresh-cluster apply of `crates/of-core/migrations/`. Whatever this change touches, verify it
+or a fresh-cluster apply of `crates/tower-core/migrations/`. Whatever this change touches, verify it
 explicitly (Phase 5).
 
 **Violating the letter of the workflow is violating the spirit.**
@@ -76,8 +76,8 @@ These hold for every run of this skill, no exceptions, no fast-path carve-outs:
    steered by the implementer's framing. This is deliberate: the security review is the one pass
    that evaluates what was actually built, unmediated.
 6. **A public interface change is a deliberate, documented change.** The interfaces customers and
-   agents bind to are the **MCP tool surface** (`of-mcp` tool names, input schemas, and the
-   one-field result envelopes in `tools::out`), the **console REST API** (`of-web`'s
+   agents bind to are the **MCP tool surface** (`tower-mcp` tool names, input schemas, and the
+   one-field result envelopes in `tools::out`), the **console REST API** (`tower-web`'s
    `catalog.rs` routes and their request/response shapes, which the OpenAPI document is rendered
    from), the **OAuth/discovery endpoints**, the **config surface** (`OF_*` env vars), and the
    **database schema** (forward-only migrations). Additive changes — a new tool, a new optional
@@ -116,17 +116,17 @@ are true:
 - Single-file or 1–2 logical source files (tests and lock files don't count toward the cap; a file
   and its required mirror/duplicate count as one logical file)
 - No new public interface: no new MCP tool, no new console route in `catalog.rs`, no new SQL
-  statement or `of-core` function, no new `OF_*` config key, no new migration, no new crate
+  statement or `tower-core` function, no new `OF_*` config key, no new migration, no new crate
 - No **breaking** change to the MCP tool surface, the console API, the OAuth/discovery endpoints,
   the config surface, or the schema (Non-Negotiable Rule 6) — breaking changes are never fast-path
 - No change to the auth spine (`of-auth`: passkey ceremonies, OAuth 2.1 AS, token hashing, sessions,
   PATs, redirect-URI matching), to tenant isolation (`Tx`/`OrgCtx`/RLS policies), or to metering
-  (`of-billing::classify`, `Factory::charge`)
-- No change to crate boundaries (no crate gains a dependency edge; no SQL appears outside `of-core`)
+  (`tower-billing::classify`, `Factory::charge`)
+- No change to crate boundaries (no crate gains a dependency edge; no SQL appears outside `tower-core`)
 - No behavior change on a code path covered by tests (a type-only fix is fine; a logic change that
   alters runtime behavior is not)
 - No change to deploy/distribution shape (`Dockerfile`, `fly.toml`, `.github/workflows/`, `web/`,
-  `web/worker/`, `crates/of-core/migrations/`)
+  `web/worker/`, `crates/tower-core/migrations/`)
 - No new file under `.github/skills/`, and no change to dispatch/orchestration logic in an
   existing one, however small — a prose or typo fix inside one stays eligible
 - The acceptance criterion fits in one sentence
@@ -155,9 +155,9 @@ triviality, not "I think this is small."
 | Fast-path rationalization                                  | Reality                                                                                                                                                                     |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | "It's only 3 files"                                        | Fast-path caps at 2. Three files → spec.                                                                                                                                    |
-| "The new MCP tool is tiny"                                 | A new tool is a new public interface — and it must be priced in `of-billing::classify` and described for an LLM that has never read the docs. Spec.                         |
+| "The new MCP tool is tiny"                                 | A new tool is a new public interface — and it must be priced in `tower-billing::classify` and described for an LLM that has never read the docs. Spec.                         |
 | "The new console route is tiny"                            | A route means a `catalog.rs` entry, an `OrgCtx` authorization decision, and an OpenAPI summary. Spec.                                                                       |
-| "I'll just add the query in `of-web` instead of `of-core`" | Every SQL statement lives in `of-core`; a query elsewhere bypasses the `Tx` pinning RLS depends on. A design defect, not a nit.                                             |
+| "I'll just add the query in `tower-web` instead of `tower-core`" | Every SQL statement lives in `tower-core`; a query elsewhere bypasses the `Tx` pinning RLS depends on. A design defect, not a nit.                                             |
 | "I'll tweak the existing migration rather than add one"    | Migrations are forward-only. Editing an applied one is forbidden outright (Rule 6).                                                                                         |
 | "The type fix incidentally fixes a bug"                    | If behavior changes, you need the spec to record what it changed and why.                                                                                                   |
 | "I'll fast-path the first sub-change and spec the rest"    | If the work splits into sub-changes, write the spec. Multi-step work doesn't fast-path.                                                                                     |
@@ -173,16 +173,16 @@ triviality, not "I think this is small."
 | Trunk                      | `master`. **All** work happens in a worktree; **all** master-branch changes land via merged PRs. No direct commits, pushes, or merges to `master` outside a PR (Non-Negotiable Rules 1–2).                                                                                                                                                                                                                                                                                                                                                                  |
 | Worktree                   | **Required.** `git worktree add .worktrees/<branch> -b <branch> origin/master` — the worktrees live **inside the repo** at `.worktrees/<branch>`, not as sibling directories. Confirm `.worktrees/` is gitignored before creating the first one — **never `git add .`** in the main checkout (a nested worktree's contents, including a developer-local `.env`, could be staged). Branch off `origin/master`, never local `master` (see Phase 0 trunk-sync). Every code edit, commit, and push happens from inside this worktree.                           |
 | Branch name                | `<area>/<kebab-slug>`, matching the repo's history — `passkeys/webauthn`, `deploy/isolation-startup-check`, `ci/github-actions`. Area is a crate short name (`core`, `auth`, `mcp`, `billing`, `trackers`, `web`, `server`) or a theme (`deploy`, `ci`, `docs`).                                                                                                                                                                                                                                                                                            |
-| Commit format              | `<scope>: <subject>` — scope is a crate directory or area: `of-core:`, `of-auth:`, `of-mcp:`, `of-billing:`, `of-trackers:`, `of-web:`, `of-server:`, `web:` (the SvelteKit console), `docs:`, `ci:`. Squash-merge to master via PR.                                                                                                                                                                                                                                                                                                                        |
+| Commit format              | `<scope>: <subject>` — scope is a crate directory or area: `tower-core:`, `of-auth:`, `tower-mcp:`, `tower-billing:`, `tower-trackers:`, `tower-web:`, `tower-server:`, `web:` (the SvelteKit console), `docs:`, `ci:`. Squash-merge to master via PR.                                                                                                                                                                                                                                                                                                                        |
 | AI attribution             | **Never.** No `Co-Authored-By`, no "Generated with", no `🤖`/AI credit markers in commits, PR bodies, comments, or docs — direct work or subagent work (Non-Negotiable Rule 3).                                                                                                                                                                                                                                                                                                                                                                             |
 | Spec storage               | **Repo file, committed.** `docs/specs/YYYY-MM-DD-<slug>-design.md` — never a tracker comment, never uncommitted.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Plan storage               | **Repo file, committed.** `docs/plans/YYYY-MM-DD-<slug>.md` — same rule.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Plan format                | Read [`docs/plans/2026-09-01-milestone-1.md`](../../../docs/plans/2026-09-01-milestone-1.md) first and match it: a Goal paragraph, a `## Status — <date>` block, then one `## Task N — <name>` per task carrying a ✅ / 🚧 / ⬜ marker, with `- [ ]` steps in failing-test-first order, exact file paths, exact commands, and a final format-and-commit step. Each task's gate is `cargo test` + `cargo clippy --all-targets -- -D warnings` + `cargo fmt --all`. Where the plan implements a committed spec, open with a `**Spec:** … read it first` line. |
 | Record-as-shipped          | On completion, flip the spec's `> **Status:**` to IMPLEMENTED, update the relevant plan task's marker (✅, or 🚧 with a **Remaining** note) and the plan's `## Status` block, and commit as `docs: record <…> as shipped`. There is no archive directory — do not move the files.                                                                                                                                                                                                                                                                           |
 | Conventions of record      | [`CLAUDE.md`](../../../CLAUDE.md) at the repo root is the load-bearing document — read it before any non-trivial change, and treat it as outranking anything here that has drifted. `README.md` carries the crate-state table, `docs/specs/2026-09-01-otto-factory-design.md` is the design of record, `docs/plans/2026-09-01-milestone-1.md` records where the build stands, and `docs/clients/matrix.md` records what each coding-agent client actually sends. Docs can still lag the code. Read the code.                                                |
-| Test command               | `cargo test --workspace` (plain `cargo test` from the root is equivalent). Per suite: `cargo test -p of-core --test isolation`, `--test queue`, `cargo test -p of-mcp --test tools`. **Tests need a real Postgres** — `podman compose up -d` (Postgres 16 on host port 15433) and a `.env` with `DATABASE_URL` (`cp .env.example .env`). There are no database mocks, on purpose; `#[sqlx::test]` gives each test a fresh throwaway database with migrations applied.                                                                                       |
+| Test command               | `cargo test --workspace` (plain `cargo test` from the root is equivalent). Per suite: `cargo test -p tower-core --test isolation`, `--test queue`, `cargo test -p tower-mcp --test tools`. **Tests need a real Postgres** — `podman compose up -d` (Postgres 16 on host port 15433) and a `.env` with `DATABASE_URL` (`cp .env.example .env`). There are no database mocks, on purpose; `#[sqlx::test]` gives each test a fresh throwaway database with migrations applied.                                                                                       |
 | Lint / format              | `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all`. **Run `cargo fmt --all` before every Rust commit** (`rust-toolchain.toml` pins the stable channel with rustfmt + clippy).                                                                                                                                                                                                                                                                                                                                                                |
-| Console (`web/`)           | SvelteKit 2 / Svelte 5 runes / Tailwind v4, built with `adapter-static` — **not a Cargo crate**, so `cargo build/test --workspace` must never require node. Gates: `npm run check` (svelte-check + tsc over `worker/`), `npm run lint` (prettier), `npm test` (vitest over the Cloudflare Worker), `npm run build`. `of-server` serves `web/build`, so an unbuilt console answers 404 on every page while the API works.                                                                                                                                    |
+| Console (`web/`)           | SvelteKit 2 / Svelte 5 runes / Tailwind v4, built with `adapter-static` — **not a Cargo crate**, so `cargo build/test --workspace` must never require node. Gates: `npm run check` (svelte-check + tsc over `worker/`), `npm run lint` (prettier), `npm test` (vitest over the Cloudflare Worker), `npm run build`. `tower-server` serves `web/build`, so an unbuilt console answers 404 on every page while the API works.                                                                                                                                    |
 | CI                         | `.github/workflows/ci.yml` — two jobs: `rust` (fmt → clippy → `cargo test --workspace` against a Postgres 16 service on port 15433) and `web` (`npm ci` → check → lint → test). Runs on every PR and on pushes to `master`. **The merge gate is the CI run YOUR merge commit triggered, by run ID** — never "the latest run".                                                                                                                                                                                                                               |
 | Deploy                     | Fly.io for the server (`Dockerfile`, `fly.toml`, [`docs/deploy/fly.md`](../../../docs/deploy/fly.md)) with a Cloudflare Worker in front (`web/wrangler.jsonc`, [`docs/deploy/cloudflare.md`](../../../docs/deploy/cloudflare.md)). Automatic: the `deploy` job in `.github/workflows/ci.yml` runs `flyctl deploy --remote-only -a otto-factory-mcp` on every push to `master` that passes `rust`+`web`+`docker-build`; `fly deploy -a otto-factory-mcp` remains the manual escape hatch for an out-of-band deploy.                                                                                                                                                          |
 | Known pre-existing failure | None known at the time of writing (2026-09). Do not treat a pre-existing failure as a regression you caused; if CI was green on `master` before your branch, a new failure is yours.                                                                                                                                                                                                                                                                                                                                                                        |
@@ -201,21 +201,21 @@ explains the reasoning behind each at length — read it, and treat the list her
    every statement carries `org_id = $1` explicitly. Guard 2 is row-level security: `Db::begin`
    issues `SET LOCAL ROLE otto_app` **and** `SET LOCAL app.org_id`, and on managed Postgres (where
    `otto_app` cannot be created) `FORCE ROW LEVEL SECURITY` carries the guarantee instead —
-   `Db::verify_tenant_isolation` reads back which shape it is in, and `of-server` refuses to bind a
+   `Db::verify_tenant_isolation` reads back which shape it is in, and `tower-server` refuses to bind a
    port unless one of them holds. A new tenant table needs a `NOT NULL org_id`, an entry in the
    `tenant_tables` array in `0001_baseline.sql`, a policy named exactly `<table>_tenant_isolation`, and a
    **cross-org negative test**. Without the negative test it is not done.
 2. **Ordinary cross-org tests pass on guard 1 alone.** The tests that actually exercise RLS are the
-   `rls_scopes_*` ones in `crates/of-core/tests/isolation.rs`, which issue deliberately unscoped SQL
+   `rls_scopes_*` ones in `crates/tower-core/tests/isolation.rs`, which issue deliberately unscoped SQL
    inside a pinned transaction. `#[sqlx::test]` connects as a superuser and bypasses RLS, so a test
    of a policy **must** `SET LOCAL ROLE otto_app` explicitly or it passes against no policy at all. A
    privilege granted to or revoked from `otto_app` is not a protection — express the rule as a policy.
-3. **Every SQL statement lives in `of-core`.** A query in `of-mcp`, `of-web`, `of-auth`, or
-   `of-billing` is a bug: it bypasses the `Tx` pinning that guard 2 depends on. `of-core` has no
+3. **Every SQL statement lives in `tower-core`.** A query in `tower-mcp`, `tower-web`, `of-auth`, or
+   `tower-billing` is a bug: it bypasses the `Tx` pinning that guard 2 depends on. `tower-core` has no
    HTTP and no auth; every tenant-scoped function takes an `OrgId`. **One exception:** the usage
-   outbox's SQL lives in `of-billing/src/outbox.rs`, because the row must be written in the
+   outbox's SQL lives in `tower-billing/src/outbox.rs`, because the row must be written in the
    tool's own pinned `Tx` by the crate that owns metering, and the shipper drains it across all
-   orgs. It writes only through the caller's `Tx`; nothing else in `of-billing` touches SQL, and
+   orgs. It writes only through the caller's `Tx`; nothing else in `tower-billing` touches SQL, and
    the exception does not extend to any other table.
 4. **Auth is passwordless and mail-less.** Passkeys (WebAuthn) for individuals, enterprise OIDC
    federation for orgs. **No password is ever accepted or stored, and no email is ever sent** —
@@ -236,13 +236,13 @@ explains the reasoning behind each at length — read it, and treat the list her
    carve-out (`127.0.0.1` / `[::1]` / `localhost` ignore the port) — do not tighten that without
    checking `docs/clients/matrix.md` against a real client; removing it once silently killed Claude
    Code's OAuth path entirely.
-7. **In `of-mcp`, the caller comes from the request and the org comes from the token.** An MCP
+7. **In `tower-mcp`, the caller comes from the request and the org comes from the token.** An MCP
    session spans many HTTP requests, so the `Principal` is introspected per request and never cached
    on the service — that is what makes revocation take effect on the next call. No tool takes an org
    argument. Every result is a one-field object defined in `tools::out`. Tool descriptions are the
    documentation, written for an LLM that has never read these docs, and `tests/tools.rs` asserts
    both the tool list and that every tool describes itself.
-8. **In `of-web`, authorization is an extractor, not a handler's first line.** `OrgCtx` resolves
+8. **In `tower-web`, authorization is an extractor, not a handler's first line.** `OrgCtx` resolves
    caller, org, and role before any handler body runs; `require_admin()` / `require_owner()` narrow
    it. **An org you are not in is `404`, never `403`** — a `403` turns any signed-in account into a
    directory of who uses the product. The router and the OpenAPI document are built from one list in
@@ -250,7 +250,7 @@ explains the reasoning behind each at length — read it, and treat the list her
    spent on a `GET`**: single-use redemptions are `POST`s behind a page with a button, and
    `every_single_use_redemption_is_a_post` asserts it. The session cookie's attributes
    (`HttpOnly`, `Secure`, `Path=/`, `SameSite=Lax`, `__Host-`) are asserted for the same reason.
-9. **The console API is read-only over the queue.** Every job write belongs to `of-mcp` — the agent
+9. **The console API is read-only over the queue.** Every job write belongs to `tower-mcp` — the agent
    doing the work is the only party that can say when it is done. `the_queue_is_read_only_over_the_console`
    fails if a write ever appears under `/jobs`.
 10. **`web/` is a static SPA for a security reason.** The `__Host-` session cookie is bound to one
@@ -263,25 +263,25 @@ explains the reasoning behind each at length — read it, and treat the list her
     `src/lib/clients.ts`; a bespoke wizard for one client is where agent-agnosticism breaks first.
 11. **Metering bills completed jobs, inside the work's own transaction.** Every tool is free;
     every completed job (`complete_job` or an inbound ticket close) writes exactly one completion
-    row through `of_billing::record_job_completed`, in the same transaction, so a failed call is
+    row through `tower_billing::record_job_completed`, in the same transaction, so a failed call is
     never billed and a successful one never double-billed (a repeat close is a no-op). A ticket
     close is billed only when the job was ever claimed (`attempts > 0`) and the org is not
     blocked; otherwise its row is unbilled. The shipper
     declares every meter in `METER_DECLARATIONS` before it ships. **A new tool must be classified
-    in `of-billing::classify`** — `exhaustive_over` and `every_tool_has_a_price` fail when the
+    in `tower-billing::classify`** — `exhaustive_over` and `every_tool_has_a_price` fail when the
     router and the price list disagree. Only `complete_job` can be refused, on the platform's
     `blocked_reason` (`budget_exceeded` | `payment_required`); a blocked org's tracker close is
     applied but unbilled. The status is looked up before the transaction (`Meter::warm`, on both
     paths), and a failed lookup lets the call through. `OF_ENFORCE_QUOTAS` is retired.
-12. **Migrations are append-only, one file per concern, in `crates/of-core/migrations/`.** Never
+12. **Migrations are append-only, one file per concern, in `crates/tower-core/migrations/`.** Never
     edit a migration that has been applied anywhere — add a new one. (`0001_baseline.sql` is a
     one-time squash, done at the platform cutover; the schema is domain-only and holds no foreign
     key to anything the platform owns — `tests/guards.rs` enforces that.)
 13. **`Watcher::spawn` detaches a connection for `LISTEN`, and dropping the pool does not reclaim
     it.** A `#[sqlx::test]` that spawns a watcher and never calls `Watcher::shutdown()` hangs at
-    teardown instead of failing. `of-server`'s graceful shutdown runs `watcher.shutdown().await`
+    teardown instead of failing. `tower-server`'s graceful shutdown runs `watcher.shutdown().await`
     only after `axum::serve(...)` returns — keep that ordering.
-14. **`of-server` assembly has failures only it can produce.** Route collisions are a startup panic,
+14. **`tower-server` assembly has failures only it can produce.** Route collisions are a startup panic,
     and `the_whole_router_assembles` reaches it before a deployment does. The SPA fallback must never
     answer under `/api`, `/oauth`, `/mcp`, `/.well-known`, `/platform`, or `/webhooks`. `/healthz`
     never touches the database and `/readyz` always does (neither touches the platform). There is
@@ -483,7 +483,7 @@ convention requires it. Create `docs/specs/YYYY-MM-DD-<slug>-design.md`, followi
   testing. Cite `file:line` references to existing code where the design touches it
 - **Tenant isolation** — if the change adds or touches a tenant table, name the `org_id` column, the
   `0001_baseline.sql` registration, the `<table>_tenant_isolation` policy, and the cross-org negative test
-- **Metering** — if the change adds an MCP tool, name its `of-billing::classify` classification
+- **Metering** — if the change adds an MCP tool, name its `tower-billing::classify` classification
 
 Required sections, wherever they fit: **Assumptions** (every choice made without asking, each with a
 one-line rationale — the highest-value section), **Goal & Success Criteria** (one paragraph + 3–5
@@ -523,13 +523,13 @@ match it:
 - **Spec:** line pointing at the committed design spec — "read it first. This plan implements it exactly."
 - **Global Constraints** — the invariants that hold for every task: the applicable Load-Bearing
   Invariants above, "no AI self-attribution", "run `cargo fmt --all` before every Rust commit",
-  "every SQL statement lives in `of-core`", "tests need `podman compose up -d` and a `.env`"
+  "every SQL statement lives in `tower-core`", "tests need `podman compose up -d` and a `.env`"
 - **File Structure** table — `File | Responsibility`, each row prefixed **Create.**/**Modify.**
 - **Task Order & Rationale** — why the tasks run in this order
 - One `## Task N — <name>` per task, carrying a ⬜ marker and listing **Files:** and **Interfaces:**
   (consumes/produces), then `- [ ]` steps in **failing-test-first order**: write failing test → run
   → implement → run → commit. Include exact file paths, exact commands
-  (`cargo test -p of-core --test isolation`, `cargo test -p of-mcp --test tools`, `npm run check`),
+  (`cargo test -p tower-core --test isolation`, `cargo test -p tower-mcp --test tools`, `npm run check`),
   and the expected result of each run
 
 Every task MUST include:
@@ -539,7 +539,7 @@ Every task MUST include:
   console bundle, Cloudflare Worker, migrations)
 - **A cross-org negative test step whenever the task touches a tenant table or a tenant-scoped
   function** — per Load-Bearing Invariant 1, without it the task is not done
-- **A `of-billing::classify` step whenever the task adds an MCP tool** — `every_tool_has_a_price`
+- **A `tower-billing::classify` step whenever the task adds an MCP tool** — `every_tool_has_a_price`
   fails otherwise
 - **A breaking-change step when the task changes a public interface in a non-additive way:** a
   `- [ ]` step recording the break in the spec, in `docs/clients/matrix.md` where a client sees it,
@@ -715,7 +715,7 @@ PR gets ALL THREE dispatched in the same parallel batch, regardless of size:
 | Reviewer                         | Why                                                                                                                                                                                                                                                                                                   |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `rust-pro` (Rust expert)         | Idiomatic Rust: ownership/lifetimes, error handling, no `unwrap()` outside tests, no panics on untrusted input, `Send + Sync` async seams, sqlx usage, test placement — against this repo's conventions (`#[sqlx::test]` against real Postgres, no database mocks, errors written for an LLM caller). |
-| `architect-reviewer` (architect) | Architectural consistency: all SQL in `of-core`, crate boundaries (`of-core` → `of-auth`/`of-billing` → `of-mcp`/`of-web` → `of-server`), the two tenant-isolation guards, the console API staying read-only over the queue, the three constraints in `CLAUDE.md`, spec/plan alignment.               |
+| `architect-reviewer` (architect) | Architectural consistency: all SQL in `tower-core`, crate boundaries (`tower-core` → `of-auth`/`tower-billing` → `tower-mcp`/`tower-web` → `tower-server`), the two tenant-isolation guards, the console API staying read-only over the queue, the three constraints in `CLAUDE.md`, spec/plan alignment.               |
 | `security-auditor` (independent) | Security of the actual diff. **Receives ONLY the diff** — never the spec/plan/brief/PR-body summary (Non-Negotiable Rule 5). See the Independent Security Review template in `agent-prompts.md`.                                                                                                      |
 
 The rust-pro and architect-reviewer reviews the actual diff (commit range), not the summary. Treat
@@ -805,9 +805,9 @@ This is how the plan-by-plan record stays current — the docs ARE the project's
 
 ## Phase 5 — Deploy, verify, close
 
-**CI exists; a deploy pipeline does not.** Savvagent Tower is one Axum binary (`of-server`) deployed to
+**CI exists; a deploy pipeline does not.** Savvagent Tower is one Axum binary (`tower-server`) deployed to
 Fly.io from `Dockerfile` + `fly.toml`, with a Cloudflare Worker in front (`web/wrangler.jsonc`) and
-PostgreSQL behind it, migrated at startup by `of-core`'s embedded migrations. `.github/workflows/ci.yml`
+PostgreSQL behind it, migrated at startup by `tower-core`'s embedded migrations. `.github/workflows/ci.yml`
 gates every PR and every push to `master`; deploys are manual and out of band. Phase 5 is: confirm
 YOUR CI run is green, run the out-of-band checklist for what the change touched, then close.
 
@@ -837,10 +837,10 @@ npm run build`. Confirm nothing about the deployment got baked into the bundle (
   the dev proxy in `vite.config.ts` still covers `/api`, `/oauth`, and `/.well-known`.
 - **Cloudflare Worker** — if `web/worker/` or `web/wrangler.jsonc` changed: `npm test` (vitest is the
   Worker's routing gate) and re-read [`docs/deploy/cloudflare.md`](../../../docs/deploy/cloudflare.md).
-- **Database migrations** — if `crates/of-core/migrations/` changed: confirm the new file is
+- **Database migrations** — if `crates/tower-core/migrations/` changed: confirm the new file is
   _additive and new_ (an already-applied migration is never edited), that `0001_baseline.sql` still runs
   last, and that a fresh cluster applies cleanly — `podman compose down -v && podman compose up -d`
-  then `cargo test -p of-core`. A new tenant table must appear in `0001_baseline.sql`'s `tenant_tables`
+  then `cargo test -p tower-core`. A new tenant table must appear in `0001_baseline.sql`'s `tenant_tables`
   with a `<table>_tenant_isolation` policy and a cross-org negative test, or
   `Db::verify_tenant_isolation` will not vouch for it at startup.
 - **CI** — if `.github/workflows/` changed: confirm the workflow parses and the jobs actually ran on
@@ -855,9 +855,9 @@ state it explicitly.
 
 The target is the local workspace plus `master`'s own CI. For a change that shipped, the smoke is:
 your merge commit's CI run green, plus the step-14 out-of-band items. For user-facing surfaces, run
-the binary once (`podman compose up -d && cargo run -p of-server`, with `web/` built) and exercise
-the changed surface: the console page for a `web/` or `of-web` change, an MCP tool call over a
-personal access token for a `of-mcp` change, a sign-in ceremony for a `of-auth` change.
+the binary once (`podman compose up -d && cargo run -p tower-server`, with `web/` built) and exercise
+the changed surface: the console page for a `web/` or `tower-web` change, an MCP tool call over a
+personal access token for a `tower-mcp` change, a sign-in ceremony for a `of-auth` change.
 
 ### Step 16: Close
 
@@ -920,7 +920,7 @@ Stop the pipeline and return control to the developer when ANY of these is true:
 8. An agent review surfaces a security finding (auth, injection, secrets, PII) — especially one
    touching tenant isolation, the passkey ceremonies, the OAuth authorization server, token hashing,
    session cookies, or the MCP resource-server middleware.
-9. A proposed change would cross a tenant boundary, add SQL outside `of-core`, add a tenant table
+9. A proposed change would cross a tenant boundary, add SQL outside `tower-core`, add a tenant table
    without an RLS policy and a cross-org negative test, answer `403` where the product answers `404`,
    spend a credential on a `GET`, leak a secret into logs or a response, persist a raw token, edit an
    applied migration, reintroduce a mailer or a password, or add a client-specific dependency — these
@@ -993,9 +993,9 @@ explicitly.
 | "I'll answer 403 for an org the caller isn't in"                   | That turns any signed-in account into a directory of who uses the product. It is `404`, always.                                                  |
 | "I'll store the token so it can be revoked by value"               | Tokens are stored as SHA-256 hashes only. Revoke by hash, never persist the raw token.                                                           |
 | "I'll log the token / the passkey challenge for debugging"         | Secrets never cross a trust boundary into logs, errors, or responses.                                                                            |
-| "One little query in `of-web` is easier than a `of-core` function" | Every SQL statement lives in `of-core`; a query elsewhere bypasses the `Tx` pinning RLS depends on.                                              |
+| "One little query in `tower-web` is easier than a `tower-core` function" | Every SQL statement lives in `tower-core`; a query elsewhere bypasses the `Tx` pinning RLS depends on.                                              |
 | "The new tenant table's cross-org test can come later"             | A tenant-scoped function without a cross-org negative test is not done. `verify_tenant_isolation` won't vouch for an unregistered policy either. |
-| "I'll add the tool now and price it in `of-billing` later"         | `every_tool_has_a_price` fails, and an unclassified tool bills as free. Classify it in the same PR.                                              |
+| "I'll add the tool now and price it in `tower-billing` later"         | `every_tool_has_a_price` fails, and an unclassified tool bills as free. Classify it in the same PR.                                              |
 | "I'll tidy up the migration that's already applied"                | Migrations are forward-only. Add a new one; never edit an applied one.                                                                           |
 | "An email would be the simplest way to do this"                    | Nothing in this product sends email. Reintroducing a mailer is a product decision, not a convenience.                                            |
 | "This only needs to work in one agent"                             | If a feature only works in one client, it does not ship (constraint 3).                                                                          |

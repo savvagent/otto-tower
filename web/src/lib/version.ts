@@ -9,10 +9,10 @@ import { version } from '../../package.json';
  *
  * Whether it is also the version the *accompanying server* was built from
  * depends on the deploy shape. Under the single-image Docker/Fly shape
- * (`Dockerfile`, `docs/deploy/fly.md`) the console bundle and the `of-server`
+ * (`Dockerfile`, `docs/deploy/fly.md`) the console bundle and the `tower-server`
  * binary are built in the same `Dockerfile` from the same source tree, so the
  * two cannot drift. Under the Cloudflare Worker shape (`docs/deploy/cloudflare.md`)
- * the console is deployed independently (`npm run deploy`) from `of-server`
+ * the console is deployed independently (`npm run deploy`) from `tower-server`
  * (`flyctl deploy`), on its own cadence — `docs/deploy/cloudflare.md`'s own
  * "What is still open" section notes the Worker's bundle and the image's
  * bundle can drift because nothing deploys both from one commit. So this is

@@ -9,7 +9,7 @@
 > sequence, kept as the historical record.
 
 Savvagent Tower runs as a single persistent machine on Fly.io — no scale-to-zero, because
-`Watcher::spawn` (of-core) holds a detached `LISTEN` connection that a request-scoped
+`Watcher::spawn` (tower-core) holds a detached `LISTEN` connection that a request-scoped
 serverless model would fight. See `CLAUDE.md` for why the process must stay warm.
 
 ## Topology
@@ -48,9 +48,9 @@ sessions, plans, or usage totals, and no foreign key to any of them. Every `org_
   - Connecting role: the one `fly postgres attach` created for this app (a
     **superuser**).
   - `DATABASE_URL` is staged as an app secret.
-- **Migrations are Savvagent Tower's own.** `of_core::migrate` applies
-  `crates/of-core/migrations` to `otto_factory`. It must never call
-  `otto_tenant::Db::migrate`, which applies the platform's own, differently numbered
+- **Migrations are Savvagent Tower's own.** `tower_core::migrate` applies
+  `crates/tower-core/migrations` to `otto_factory`. It must never call
+  `savvagent_tenant::Db::migrate`, which applies the platform's own, differently numbered
   history (`tests/guards.rs` fails the build if anything does).
 
 ### Secrets
@@ -60,7 +60,7 @@ sessions, plans, or usage totals, and no foreign key to any of them. Every `org_
 | Secret | What it is | Where it comes from |
 |---|---|---|
 | `DATABASE_URL` | Postgres URL for `otto_factory` | `fly postgres attach` |
-| `OF_ENCRYPTION_KEY` | 32 bytes base64; seals tracker credentials at rest | `openssl rand -base64 32`. Fed unchanged to `otto_tenant::crypto::Cipher`. |
+| `OF_ENCRYPTION_KEY` | 32 bytes base64; seals tracker credentials at rest | `openssl rand -base64 32`. Fed unchanged to `savvagent_tenant::crypto::Cipher`. |
 | `OF_INTROSPECTION_SECRET` | `sav_rs_…`; authenticates every call this service makes to the platform | Printed once by `resource rotate-secret` (`resource register` issues none) |
 | `OF_PLATFORM_WEBHOOK_SECRET` | `sav_whsec_…`; verifies the platform's lifecycle webhooks | Printed once by `resource set-webhook` |
 
@@ -79,29 +79,29 @@ credential `resource rotate-secret` issues for it. Registration is an **operator
 (it replaces the startup upsert the service used to do against its own database):
 
 ```bash
-# On the platform (a machine with otto-platform-server and its OTTO_* environment):
-otto-platform-server resource register https://tower.savvagent.com/mcp \
+# On the platform (a machine with savvagent-platform-server and its OTTO_* environment):
+savvagent-platform-server resource register https://tower.savvagent.com/mcp \
   --name "Savvagent Tower" \
   --scopes jobs:read,jobs:write,repos:read,repos:write,messages,trackers,org:admin \
   --default-scopes jobs:read,repos:read
 
-otto-platform-server resource rotate-secret https://tower.savvagent.com/mcp
+savvagent-platform-server resource rotate-secret https://tower.savvagent.com/mcp
 #   -> prints the introspection secret ONCE: set it as OF_INTROSPECTION_SECRET
 #      (`register` issues no credential; `rotate-secret` is also how to replace it)
 
-otto-platform-server resource set-webhook https://tower.savvagent.com/mcp \
+savvagent-platform-server resource set-webhook https://tower.savvagent.com/mcp \
   https://tower.savvagent.com/platform/webhooks
 #   -> prints the webhook signing secret ONCE: set it as OF_PLATFORM_WEBHOOK_SECRET
 ```
 
-The scope list is `of_core::scopes::KNOWN` and the defaults are `of_core::scopes::DEFAULT`;
+The scope list is `tower_core::scopes::KNOWN` and the defaults are `tower_core::scopes::DEFAULT`;
 keep them in step when a release adds a scope (the service's own check and its
 `/.well-known/oauth-protected-resource` document read from the same constants, but the
 platform's registered list is what it will actually issue). `OF_RESOURCE_URI` must be
 **exactly** the URI registered here: it is the HTTP Basic user on every platform call and
 the audience every token must carry.
 
-At startup `of-server` makes one harmless platform call and logs whether the platform
+At startup `tower-server` makes one harmless platform call and logs whether the platform
 accepted its credential (`REJECTED this service's credential` means a wrong secret or
 URI). It does not refuse to start on failure: a platform outage must not stop a restart
 that would otherwise serve cached tokens.
@@ -118,7 +118,7 @@ is an operator step on the platform:
 ```bash
 # Run on the platform's machine (it needs the platform's OTTO_* environment):
 fly ssh console -a otto-platform -C \
-  'otto-platform-server client register --name "Savvagent Tower console" \
+  'savvagent-platform-server client register --name "Savvagent Tower console" \
      --redirect-uri https://tower.savvagent.com/auth/callback --first-party'
 #   -> prints the client_id: set it as OF_CONSOLE_CLIENT_ID
 ```
@@ -145,7 +145,7 @@ machines.
 Every tool call writes a row to `usage_outbox` in the tool's own transaction; a successful
 `complete_job`, and a ticket close to Completed of a job that was ever claimed, carry the
 `otto-tower/jobs_completed` meter (quantity 1), which is what is billed. A close of a
-never-claimed job, or any close while the org is blocked, is recorded unbilled. A background task in `of-server` first **declares the
+never-claimed job, or any close while the org is blocked, is recorded unbilled. A background task in `tower-server` first **declares the
 meter** with the platform, then ships rows to `/internal/usage` in batches of up to 500, deleting
 what the platform accepted (it dedupes on the row's `event_id`, so retries are safe). Nothing ships
 until the declaration succeeds; it retries with backoff and logs an error about once a minute with
@@ -180,7 +180,7 @@ resource server, which is already done for production (slug `otto-factory` until
 `resource rename-service` step renames it to `otto-tower`).
 
 **The meter key's `otto-tower/` prefix must match the service slug the platform assigned to
-this resource server.** The key is a constant (`of_billing::METER_JOBS_COMPLETED`), not
+this resource server.** The key is a constant (`tower_billing::METER_JOBS_COMPLETED`), not
 configuration, so a deployment registered under another slug (a staging resource server set to
 `otto-tower-staging`, say) has its declaration and its metered events refused. Set the slug to
 `otto-tower` for every environment that runs this binary, or the meter does not bill there.
@@ -213,7 +213,7 @@ and `GRANT otto_app TO CURRENT_USER`; both need `CREATEROLE`, which a superuser 
 unconditionally. Expect at startup:
 
 ```
-INFO of_server: tenant isolation enforced as role "otto_app"
+INFO tower_server: tenant isolation enforced as role "otto_app"
                 (assumed via SET LOCAL ROLE); 12 tenant tables, 12 forced
 ```
 
@@ -221,7 +221,7 @@ So this deployment runs in the same configuration as local development and
 `#[sqlx::test]`: `otto_app` exists, `Db::begin` issues `SET LOCAL ROLE otto_app` for
 every tenant transaction, and the connecting superuser is never the role a request
 actually runs as. `Db::verify_tenant_isolation` re-derives this from the catalog at
-startup and `of-server` refuses to bind a port otherwise.
+startup and `tower-server` refuses to bind a port otherwise.
 
 **Roles are cluster-scoped, and `otto-db` is one cluster.** `otto_app` is a single role
 shared by `otto_factory` and `otto_platform`; its grants are per database. Whichever
@@ -230,7 +230,7 @@ app migrates first creates it, and the other finds it present and only re-grants
 > An earlier version of this section described a managed-Postgres deployment where
 > `CREATEROLE` was unavailable and isolation instead relied on `FORCE ROW LEVEL
 > SECURITY` applying to a non-superuser table owner. That is not this deployment, but it
-> remains the fallback path `of-server` supports if this ever moves to managed Postgres.
+> remains the fallback path `tower-server` supports if this ever moves to managed Postgres.
 
 ## The rename cutover
 
@@ -256,7 +256,7 @@ working then.
 
 The platform release carries the guarded service rename (`resource rename-service`), the
 time-boxed URI alias (`resource rename`, `drop-alias`) and OAuth alias resolution. Nothing below
-works without it. Check `otto-platform-server resource show $OLD` runs on the deployed binary (it is read-only; `resource describe` is not, since it replaces the consent-screen scope descriptions).
+works without it. Check `savvagent-platform-server resource show $OLD` runs on the deployed binary (it is read-only; `resource describe` is not, since it replaces the consent-screen scope descriptions).
 
 ### 2. Release and deploy otto-factory (this repo)
 
@@ -312,9 +312,9 @@ transaction that is always rolled back. Do **not** use `resource describe` here:
 consent-screen scope descriptions.
 
 ```bash
-otto-platform-server resource show $OLD                                  # service slug is otto-factory; blockers all 0
-otto-platform-server resource rename-service $OLD otto-tower --dry-run   # reports it would rename, changes nothing; exits non-zero if refused or busy
-otto-platform-server resource list                                       # $NEW is not registered or aliased yet
+savvagent-platform-server resource show $OLD                                  # service slug is otto-factory; blockers all 0
+savvagent-platform-server resource rename-service $OLD otto-tower --dry-run   # reports it would rename, changes nothing; exits non-zero if refused or busy
+savvagent-platform-server resource list                                       # $NEW is not registered or aliased yet
 ```
 
 **Verify:** all five counts are 0; `show` gives the slug `otto-factory` and zero blockers; the dry run
@@ -325,7 +325,7 @@ says it would rename; `list` has no entry for `$NEW`.
 ### 4. Rename the billing service, immediately
 
 ```bash
-otto-platform-server resource rename-service $OLD otto-tower
+savvagent-platform-server resource rename-service $OLD otto-tower
 ```
 
 Do this straight after step 3 and before anything else, and only while usage shipping is paused
@@ -391,8 +391,8 @@ pending (DNS not propagated), or `/healthz` does not answer on the new name.
 ### 6. Rename the resource URI, keeping the old one as an alias
 
 ```bash
-otto-platform-server resource rename $OLD $NEW --alias-until $SUNSET --name otto-tower
-otto-platform-server resource list      # confirm: $NEW canonical, $OLD alias until $SUNSET
+savvagent-platform-server resource rename $OLD $NEW --alias-until $SUNSET --name otto-tower
+savvagent-platform-server resource list      # confirm: $NEW canonical, $OLD alias until $SUNSET
 ```
 
 `--name` sets the name the consent screen shows. The rename also rewrites existing tokens and
@@ -413,7 +413,7 @@ to `$NEW` without the alias makes introspection authentication fail and the serv
 
 ```bash
 fly ssh console -a otto-platform -C \
-  'otto-platform-server client register --name "otto-tower console" \
+  'savvagent-platform-server client register --name "otto-tower console" \
      --redirect-uri https://otto-tower.savvagent.com/auth/callback --first-party'
 ```
 
@@ -493,7 +493,7 @@ ships. The otto-factory flip PR also changes `.github/workflows/ci.yml`'s `envir
 ### 9. Point the lifecycle webhook at the new host
 
 ```bash
-otto-platform-server resource set-webhook $NEW https://otto-tower.savvagent.com/platform/webhooks
+savvagent-platform-server resource set-webhook $NEW https://otto-tower.savvagent.com/platform/webhooks
 #   -> prints a NEW signing secret ONCE
 ```
 
@@ -543,7 +543,7 @@ Clients that do nothing keep working through the deprecation notice until the su
 ### 11. After the sunset: drop the alias
 
 ```bash
-otto-platform-server resource drop-alias https://otto-factory.savvagent.com/mcp
+savvagent-platform-server resource drop-alias https://otto-factory.savvagent.com/mcp
 ```
 
 The alias row is kept as a tombstone, so the old URI can never be registered to a different server.
@@ -560,7 +560,7 @@ fronted by the Worker: also remove `OF_PUBLIC_URL` and `OF_LEGACY_HOSTS` from th
 - **Before step 8** (the Fly environment still names the old host): swap the URIs back at the
   platform, and nothing else has changed for users:
   ```bash
-  otto-platform-server resource rename $NEW $OLD --alias-until $SUNSET
+  savvagent-platform-server resource rename $NEW $OLD --alias-until $SUNSET
   ```
   (Run with `$NEW` as the first argument: when `$OLD` is a live alias of `$NEW`, the rename swaps the
   two.) The new host's certificate and DNS records (or, Worker-fronted, its custom domain) can stay
@@ -590,9 +590,9 @@ fronted by the Worker: also remove `OF_PUBLIC_URL` and `OF_LEGACY_HOSTS` from th
 - **Rolling the image forward again is safe for billing.** While an older image runs it enqueues
   completed jobs under `otto-factory/jobs_completed`, after `0006_meter_otto_tower.sql` has already
   been applied, so that migration never rewrites them. The usage shipper therefore bills every row
-  on a retired key (`of_billing::RETIRED_METERS`) under its successor, on every batch, including
-  rows an older replica writes while two versions run at once. Every `of-server` start also runs
-  `of_billing::outbox::rewrite_retired_meters` before the shipper declares its meters: it moves every
+  on a retired key (`tower_billing::RETIRED_METERS`) under its successor, on every batch, including
+  rows an older replica writes while two versions run at once. Every `tower-server` start also runs
+  `tower_billing::outbox::rewrite_retired_meters` before the shipper declares its meters: it moves every
   queued `usage_outbox` row still on a retired key to its successor (per org, safe under either RLS
   shape), logs `moved queued usage rows from a retired meter key` with the count when there were
   any, and is a no-op otherwise. Without these those rows would ship under an undeclared meter and
@@ -664,8 +664,8 @@ Order matters; the platform goes first.
 ## What's scaffolded
 
 - `Dockerfile` — a console stage that builds `web/` into `/srv/console`, a Rust
-  stage that builds `of-server`, and a slim non-root runtime holding both. The
-  migrations are not copied in: `of_core::migrate` uses the `sqlx::migrate!` macro,
+  stage that builds `tower-server`, and a slim non-root runtime holding both. The
+  migrations are not copied in: `tower_core::migrate` uses the `sqlx::migrate!` macro,
   which embeds them in the binary at compile time.
 - `fly.toml` — `otto-factory-mcp` app, region `iad` (co-located with its Postgres
   instance), `min_machines_running = 1` with `auto_stop_machines = "suspend"` so a
@@ -673,21 +673,21 @@ Order matters; the platform goes first.
 
 ## What's assembled
 
-`of-server/src/main.rs` assembles the real server:
+`tower-server/src/main.rs` assembles the real server:
 
-1. The Axum router merges of-mcp (`/mcp`, bearer-authenticated, plus
+1. The Axum router merges tower-mcp (`/mcp`, bearer-authenticated, plus
    `/.well-known/oauth-protected-resource` naming the platform as the authorization
-   server) and of-web (the console API, tracker webhooks, and `/platform/webhooks`), bound
+   server) and tower-web (the console API, tracker webhooks, and `/platform/webhooks`), bound
    to `OF_BIND`.
 2. `/healthz` (liveness, no DB check) and `/readyz` (readiness — `SELECT 1`
-   against the pool) are mounted directly in `of-server`. Neither depends on the platform:
+   against the pool) are mounted directly in `tower-server`. Neither depends on the platform:
    a platform outage must not take a replica out of rotation.
-3. Migrations run at startup via `of_core::migrate`, which already takes a Postgres
+3. Migrations run at startup via `tower_core::migrate`, which already takes a Postgres
    advisory lock for the duration (`sqlx::migrate!`'s built-in behavior), so
    several machines starting concurrently on a fresh database wait rather than
    racing through the same DDL.
 4. Structured (JSON) logging via `tracing-subscriber`, filtered by `RUST_LOG`.
-5. The usage shipper (`of_billing::outbox::run`) declares the meters, then drains `usage_outbox` to the platform.
+5. The usage shipper (`tower_billing::outbox::run`) declares the meters, then drains `usage_outbox` to the platform.
 6. Graceful shutdown on `SIGTERM`/Ctrl+C: stops accepting new connections,
    waits for in-flight requests, makes a final usage flush (skipped if the shipper is still
    waiting for its meter declaration), then calls
@@ -798,7 +798,7 @@ What the platform already has (phase 2): the resource registry lists this servic
 kept as a live alias until 2027-06-30, so the platform accepts the service under either URI and
 the current `otto_rs_` credential keeps working across the deploy. The `otto-factory` alias is
 dropped, which is why this change removes `OF_LEGACY_HOSTS` and `OF_LEGACY_SUNSET` (the sunset,
-2026-10-22, has passed; the legacy-host support stays in `of-server`, only the values go). The
+2026-10-22, has passed; the legacy-host support stays in `tower-server`, only the values go). The
 `tower.savvagent.com` certificate is issued.
 
 **R0. Look first (read-only).**
@@ -807,7 +807,7 @@ dropped, which is why this change removes `OF_LEGACY_HOSTS` and `OF_LEGACY_SUNSE
 curl -fsS https://tower.savvagent.com/healthz                     # ok: DNS and certificate
 fly certs list -a otto-factory-mcp                                # tower.savvagent.com Issued, and the old host
 fly secrets list -a otto-factory-mcp   # no OF_PUBLIC_URL / OF_RESOURCE_URI / OF_ALLOWED_HOSTS secret overriding fly.toml
-fly ssh console -a otto-platform -C 'otto-platform-server resource show https://tower.savvagent.com/mcp'
+fly ssh console -a otto-platform -C 'savvagent-platform-server resource show https://tower.savvagent.com/mcp'
                                     # the canonical URI, its old one a `live` alias, the webhook URL
 ```
 
@@ -850,7 +850,7 @@ signature check; the platform retries deliveries with backoff, so none is lost. 
 name the new host before #135: the platform does not follow redirects.
 
 ```bash
-platform() { fly ssh console --quiet -a otto-platform -C "otto-platform-server resource $*" | tr -d '\r'; }
+platform() { fly ssh console --quiet -a otto-platform -C "savvagent-platform-server resource $*" | tr -d '\r'; }
 
 WHSEC="$(platform set-webhook https://tower.savvagent.com/mcp https://tower.savvagent.com/platform/webhooks | grep -E '^sav_whsec_')"
 RS="$(platform rotate-secret https://tower.savvagent.com/mcp | grep -E '^sav_rs_')"
@@ -861,7 +861,7 @@ unset WHSEC RS
 
 fly secrets list -a otto-factory-mcp             # both Deployed, new digests
 curl -fsS https://tower.savvagent.com/readyz     # ready (a rejected secret is a 503 here)
-fly ssh console -a otto-platform -C 'otto-platform-server resource show https://tower.savvagent.com/mcp'
+fly ssh console -a otto-platform -C 'savvagent-platform-server resource show https://tower.savvagent.com/mcp'
                                                  # webhook=https://tower.savvagent.com/platform/webhooks
 ```
 
@@ -927,7 +927,7 @@ host. GitHub follows no redirects for webhook deliveries, and most senders do no
 - The tracker GitHub App's webhook URL and setup/callback URL (`/trackers/callback`), in the App's settings,
   must name `https://tower.savvagent.com`.
 - Confirm the platform's lifecycle webhook already names the canonical host:
-  `fly ssh console -a otto-platform -C 'otto-platform-server resource show https://tower.savvagent.com/mcp'`
+  `fly ssh console -a otto-platform -C 'savvagent-platform-server resource show https://tower.savvagent.com/mcp'`
   shows `webhook=https://tower.savvagent.com/platform/webhooks`. If not, run `resource set-webhook` (R2).
 - Agents still registered as `https://otto-tower.savvagent.com/mcp` must re-add the server at
   `https://tower.savvagent.com/mcp` (`claude mcp add --transport http savvagent-tower …`); an MCP client
@@ -941,7 +941,7 @@ certificate on each old host. Only remove one when nothing resolves to it any mo
 accepting the service under the old URI:
 
 ```bash
-fly ssh console -a otto-platform -C 'otto-platform-server resource drop-alias https://otto-tower.savvagent.com/mcp'
+fly ssh console -a otto-platform -C 'savvagent-platform-server resource drop-alias https://otto-tower.savvagent.com/mcp'
 ```
 
 **Verify.**

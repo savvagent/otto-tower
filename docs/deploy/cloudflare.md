@@ -4,7 +4,7 @@ Closes the question in [issue #2](https://github.com/savvagent/otto-factory/issu
 how to put `web/` on Cloudflare without giving up the single origin the session cookie
 depends on.
 
-**One Worker serves the built SPA and proxies everything dynamic to `of-server`.** The
+**One Worker serves the built SPA and proxies everything dynamic to `tower-server`.** The
 browser sees one hostname. `web/wrangler.jsonc` and `web/worker/index.ts` are the whole of
 it; this file is the account-side setup neither of them can express, and the two traps that
 a first deploy hits.
@@ -14,7 +14,7 @@ old names, `otto-factory-console` and `otto-factory-console-dev`, because a Work
 is an identity in the Cloudflare account; the Fly origin keeps `otto-factory-mcp.fly.dev`. The
 public hostname moves to `tower.savvagent.com` in the operator cutover described below.
 
-Self-hosted deployments are unaffected. `of-server` still serves `web/build` itself, the
+Self-hosted deployments are unaffected. `tower-server` still serves `web/build` itself, the
 `Dockerfile` still bakes it in at `/srv/console`, and nothing in this document is required
 to run the product — Cloudflare is a deployment choice, not an architecture.
 
@@ -30,7 +30,7 @@ So whatever fronts the console must *proxy* the API rather than point at it. Giv
 Pages plus a Pages Function and a Worker plus static assets do the same job, and the Worker
 is one product, one config file, and one `wrangler deploy`.
 
-A plain CDN passthrough — proxied DNS in front of Fly, cache rules, `of-server` still
+A plain CDN passthrough — proxied DNS in front of Fly, cache rules, `tower-server` still
 serving the bundle — was the other real candidate and remains a reasonable fallback. It
 needs no new pipeline and cannot suffer version skew. It also does not put the console on
 Cloudflare in any meaningful sense, which is what the issue asked for.
@@ -74,9 +74,9 @@ certificate plus `A`/`AAAA` records: step 5 of the ordered runbook in `docs/depl
 the Worker**.
 
 The behaviour a browser sees on the legacy host does not depend on the Worker. Without it,
-`of-server` itself answers the console's pages and `/auth/login` on a legacy host with a `308` to
+`tower-server` itself answers the console's pages and `/auth/login` on a legacy host with a `308` to
 the same path and query on `OF_PUBLIC_URL` (`legacy_console_redirect` in
-`crates/of-server/src/lib.rs`), carrying the deprecation notice; with it, the Worker answers that
+`crates/tower-server/src/lib.rs`), carrying the deprecation notice; with it, the Worker answers that
 `308` first and the origin never sees the request. Either way `/mcp`, discovery, `/api`, the
 webhook receivers, `/platform/webhooks` and the health probes are served on the old host, never
 redirected.
@@ -99,10 +99,10 @@ deprecation window: the canonical one and the legacy one (until the published su
    except login, `/platform/webhooks`, `/webhooks`, `/oauth`) unchanged. Webhook deliveries are
    never redirected, so customers' tracker webhooks keep landing until they move them. The Worker
    learns which hosts are legacy and where to send them from two vars in `env.production.vars`,
-   `OF_LEGACY_HOSTS` and `OF_PUBLIC_URL`, with the same values as `of-server`'s; they are added in
+   `OF_LEGACY_HOSTS` and `OF_PUBLIC_URL`, with the same values as `tower-server`'s; they are added in
    runbook step 8, after the Fly flip, and with them unset nothing is redirected. The Worker parses
-   `OF_LEGACY_HOSTS` exactly as `of-server` does (bare hostnames only). If either var is unusable,
-   or `OF_LEGACY_HOSTS` names `OF_PUBLIC_URL`'s own host (which `of-server` refuses at boot), it
+   `OF_LEGACY_HOSTS` exactly as `tower-server` does (bare hostnames only). If either var is unusable,
+   or `OF_LEGACY_HOSTS` names `OF_PUBLIC_URL`'s own host (which `tower-server` refuses at boot), it
    refuses, with `500 misconfigured`, only the console pages it can no longer route — a legacy
    host's; with a malformed host list, any host's but `OF_PUBLIC_URL`'s; with a self-naming one,
    every host's — and keeps proxying every
@@ -117,7 +117,7 @@ this service as the new URI.
 
 ## What must change on the origin
 
-Two environment variables on `of-server`, and neither is optional.
+Two environment variables on `tower-server`, and neither is optional.
 
 | Variable | Value | Why |
 |---|---|---|
@@ -134,7 +134,7 @@ fetched, so the origin sees `Host: otto-factory-mcp.fly.dev` while `OF_PUBLIC_UR
 server that answers to any `Host` is DNS-rebindable — and rejects the mismatch:
 
 ```
-$ curl -X POST https://console.example.com/mcp -H "authorization: Bearer otto_pat_…" …
+$ curl -X POST https://console.example.com/mcp -H "authorization: Bearer sav_pat_…" …
 Forbidden: Host header is not allowed
 ```
 
@@ -156,7 +156,7 @@ platform with the login surface.)
 
 Lock the origin to Cloudflare. In rough order of strength:
 
-1. **Cloudflare Tunnel** (`cloudflared` alongside `of-server`), so the origin has no public
+1. **Cloudflare Tunnel** (`cloudflared` alongside `tower-server`), so the origin has no public
    address at all.
 2. **Authenticated Origin Pulls**, so the origin accepts only TLS clients presenting
    Cloudflare's certificate.
@@ -168,14 +168,14 @@ choice is written down rather than made — but the deploy is not finished witho
 
 ## Verified locally
 
-`wrangler dev` in front of `cargo run -p of-server`, which is the same shape as the real
+`wrangler dev` in front of `cargo run -p tower-server`, which is the same shape as the real
 thing minus Cloudflare's own edge:
 
 ```bash
 # origin
 OF_PUBLIC_URL=http://localhost:8788 OF_BIND=127.0.0.1:8080 \
 OF_ALLOWED_HOSTS=127.0.0.1 \
-  cargo run -p of-server
+  cargo run -p tower-server
 
 # edge
 cd web && npm run build
@@ -223,7 +223,7 @@ them on Cloudflare's network without the Worker being involved in the response b
 - The origin lock (trap 2) is documented, not implemented.
 - There is no CI step that builds or deploys the Worker, because there is no CI
   (milestone 1, task 1).
-- The Worker's copy of the bundle and the copy inside the `of-server` image are deployed
+- The Worker's copy of the bundle and the copy inside the `tower-server` image are deployed
   separately, so they can drift. Whoever wires up CI should deploy both from one commit.
 - `worker/index.test.ts` asserts the Worker's prefix rule against the same cases the Rust
   side asserts, but nothing mechanically ties the two lists together. A third copy would

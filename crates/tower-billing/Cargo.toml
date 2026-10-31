@@ -1,0 +1,24 @@
+[package]
+name = "tower-billing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+savvagent-tenant.workspace = true
+savvagent-resource.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+schemars.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["time", "sync", "rt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tower-core.workspace = true
+tower-testkit.workspace = true
+serde_json.workspace = true

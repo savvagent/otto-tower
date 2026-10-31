@@ -1,6 +1,6 @@
 /**
  * Pure data shaping over the OpenAPI 3.1 document at `/api/openapi.json`
- * (`crates/of-web/src/openapi.rs`), for `/docs/api` to render.
+ * (`crates/tower-web/src/openapi.rs`), for `/docs/api` to render.
  *
  * Deliberately loose typing (`unknown` where the shape isn't relied on): this
  * mirrors a document generated elsewhere, and forking OpenAPI's vocabulary
@@ -90,7 +90,7 @@ function refName(schema?: { $ref?: string }): string | undefined {
 }
 
 /**
- * Only the endpoint's success response can be its "response body" — `of-web`
+ * Only the endpoint's success response can be its "response body" — `tower-web`
  * gives every endpoint `400`/`500` (and often `401`/`403`/`404`) entries that
  * all reference the shared `Error` schema, and iterating
  * `Object.values(operation.responses)` without filtering would visit those

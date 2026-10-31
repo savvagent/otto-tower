@@ -113,7 +113,7 @@ exactly one fully working reference template (Claude Code) and a stub `README.md
 other client this directory names, each stating the target client, a starting hypothesis for
 its automation surface, and the contribution checklist below — no functioning hook code, no
 fabricated verification claims. A stub graduates to a working template only once someone has
-actually run it against a live `of-server` and can honestly check every contribution-checklist
+actually run it against a live `tower-server` and can honestly check every contribution-checklist
 box.
 
 ## Directory layout
@@ -155,7 +155,7 @@ below:
 - [ ] Names the exact session-start (or equivalent) mechanism used, and links to that
       client's own documentation for it.
 - [ ] Lists, in order, every Savvagent Tower MCP tool called and with what arguments.
-- [ ] States plainly whether this was verified against a real running `of-server`, or is
+- [ ] States plainly whether this was verified against a real running `tower-server`, or is
       an unverified starting hypothesis (see `docs/clients/matrix.md`'s own register for
       this — "not run" is an acceptable, honest answer; a silent claim of "verified" when
       it wasn't is not).

@@ -1247,177 +1247,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "of-billing"
-version = "0.16.1"
-dependencies = [
- "chrono",
- "of-core",
- "of-testkit",
- "otto-resource",
- "otto-tenant",
- "schemars",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "of-core"
-version = "0.16.1"
-dependencies = [
- "base64",
- "chrono",
- "futures",
- "of-testkit",
- "otto-resource",
- "otto-tenant",
- "rand 0.8.8",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "of-mcp"
-version = "0.16.1"
-dependencies = [
- "axum",
- "chrono",
- "futures",
- "http",
- "of-billing",
- "of-core",
- "of-testkit",
- "of-trackers",
- "otto-resource",
- "otto-tenant",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "tower",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "of-server"
-version = "0.16.1"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "dotenvy",
- "http",
- "of-billing",
- "of-core",
- "of-mcp",
- "of-testkit",
- "of-trackers",
- "of-web",
- "otto-resource",
- "otto-tenant",
- "serde",
- "serde_json",
- "sqlx",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "of-testkit"
-version = "0.16.1"
-dependencies = [
- "axum",
- "base64",
- "chrono",
- "otto-resource",
- "percent-encoding",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "of-trackers"
-version = "0.16.1"
-dependencies = [
- "base64",
- "chrono",
- "hmac",
- "http",
- "jsonwebtoken",
- "of-core",
- "otto-tenant",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "thiserror",
- "tokio",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "of-web"
-version = "0.16.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "hmac",
- "http",
- "of-billing",
- "of-core",
- "of-testkit",
- "of-trackers",
- "otto-resource",
- "otto-tenant",
- "rand 0.8.8",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "subtle",
- "thiserror",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1428,45 +1257,6 @@ name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
-
-[[package]]
-name = "otto-resource"
-version = "0.14.0"
-source = "git+https://github.com/savvagent/otto-platform?rev=03f52e9f2139d08d60d0695b5cde4834f0cf19c2#03f52e9f2139d08d60d0695b5cde4834f0cf19c2"
-dependencies = [
- "chrono",
- "hex",
- "hmac",
- "moka",
- "percent-encoding",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "otto-tenant"
-version = "0.10.0"
-source = "git+https://github.com/savvagent/otto-platform?rev=bfda55e155be8985761850a7c42980cc926fd4cb#bfda55e155be8985761850a7c42980cc926fd4cb"
-dependencies = [
- "aes-gcm",
- "base64",
- "chrono",
- "hmac",
- "rand 0.8.8",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
 
 [[package]]
 name = "parking"
@@ -1971,6 +1761,45 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "savvagent-resource"
+version = "0.18.0"
+source = "git+https://github.com/savvagent/otto-platform?rev=063472cdb4eef7229d6732578cf061fd963996a4#063472cdb4eef7229d6732578cf061fd963996a4"
+dependencies = [
+ "chrono",
+ "hex",
+ "hmac",
+ "moka",
+ "percent-encoding",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "savvagent-tenant"
+version = "0.18.0"
+source = "git+https://github.com/savvagent/otto-platform?rev=063472cdb4eef7229d6732578cf061fd963996a4#063472cdb4eef7229d6732578cf061fd963996a4"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "chrono",
+ "hmac",
+ "rand 0.8.8",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "schemars"
@@ -2647,6 +2476,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "tower-billing"
+version = "0.18.0"
+dependencies = [
+ "chrono",
+ "savvagent-resource",
+ "savvagent-tenant",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tower-core",
+ "tower-testkit",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "tower-core"
+version = "0.18.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "futures",
+ "rand 0.8.8",
+ "savvagent-resource",
+ "savvagent-tenant",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tower-testkit",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "tower-http"
 version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2681,10 +2552,139 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
 
 [[package]]
+name = "tower-mcp"
+version = "0.18.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "futures",
+ "http",
+ "rmcp",
+ "savvagent-resource",
+ "savvagent-tenant",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-billing",
+ "tower-core",
+ "tower-testkit",
+ "tower-trackers",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "tower-server"
+version = "0.18.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "dotenvy",
+ "http",
+ "savvagent-resource",
+ "savvagent-tenant",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tower",
+ "tower-billing",
+ "tower-core",
+ "tower-http",
+ "tower-mcp",
+ "tower-testkit",
+ "tower-trackers",
+ "tower-web",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+
+[[package]]
+name = "tower-testkit"
+version = "0.18.0"
+dependencies = [
+ "axum",
+ "base64",
+ "chrono",
+ "percent-encoding",
+ "rand 0.8.8",
+ "savvagent-resource",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "tower-trackers"
+version = "0.18.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "hmac",
+ "http",
+ "jsonwebtoken",
+ "reqwest",
+ "savvagent-tenant",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "tokio",
+ "tower-core",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "tower-web"
+version = "0.18.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "hmac",
+ "http",
+ "rand 0.8.8",
+ "reqwest",
+ "savvagent-resource",
+ "savvagent-tenant",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "subtle",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-billing",
+ "tower-core",
+ "tower-http",
+ "tower-testkit",
+ "tower-trackers",
+ "tracing",
+ "url",
+ "uuid",
+]
 
 [[package]]
 name = "tracing"
