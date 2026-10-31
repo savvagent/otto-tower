@@ -63,6 +63,10 @@ below follows from that.
 
 ## The Savvagent Tower hostname and the legacy host
 
+(The old public hosts `otto-tower.savvagent.com` and `otto-factory.savvagent.com` are now redirect-only
+at the origin through `OF_REDIRECT_HOSTS`, `docs/deploy/fly.md` "#135: old hosts redirect". The Worker
+text below is the deprecation-window design and applies only to a Worker-fronted deployment.)
+
 **Production is not fronted by this Worker today.** `otto-factory.savvagent.com` resolves straight
 to the Fly app (DNS at Namecheap, no Cloudflare in front), and the rename cutover there is a Fly
 certificate plus `A`/`AAAA` records: step 5 of the ordered runbook in `docs/deploy/fly.md`
