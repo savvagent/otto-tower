@@ -53,7 +53,7 @@ primary_region = "iad"
   OF_LEGACY_SUNSET = "2026-10-22T00:00:00Z"
   # The OAuth authorization server, identity directory, and billing system of
   # record. Advertised to MCP clients as this resource's authorization server.
-  OF_PLATFORM_URL = "https://otto.savvagent.com"
+  OF_PLATFORM_URL = "https://savvagent.com"
   # The console's OAuth client at the platform, for console sign-in. NOT a secret
   # (a public client; PKCE is what binds a code to its browser). Printed by
   # `otto-platform-server client register --name "otto-tower console"
