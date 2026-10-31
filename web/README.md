@@ -175,15 +175,15 @@ language for it.
 
 | Path                        | What it is                                                                               |
 | --------------------------- | ---------------------------------------------------------------------------------------- |
-| `src/lib/api.ts`            | The only place that talks to `tower-web`. `ApiError` carries the stable `code`.             |
-| `src/lib/types.ts`          | The wire types, transcribed from `tower-web`'s OpenAPI document.                            |
+| `src/lib/api.ts`            | The only place that talks to `tower-web`. `ApiError` carries the stable `code`.          |
+| `src/lib/types.ts`          | The wire types, transcribed from `tower-web`'s OpenAPI document.                         |
 | `src/lib/session.svelte.ts` | Who is signed in. A rune module, not a store.                                            |
 | `src/lib/org.svelte.ts`     | The org the current route is about, via context.                                         |
 | `src/lib/login.ts`          | Starting sign-in, and the loop guard.                                                    |
 | `src/lib/platform.ts`       | Links into the platform's own console.                                                   |
 | `src/lib/poll.svelte.ts`    | Polling a page hands to an `$effect`. The overview and `/queue` use it; `/repos` should. |
 | `src/routes/`               | Public pages at the root; org pages under `/o/[org]`.                                    |
-| `worker/index.ts`           | The Cloudflare Worker: serves this bundle, proxies the API to `tower-server`.               |
+| `worker/index.ts`           | The Cloudflare Worker: serves this bundle, proxies the API to `tower-server`.            |
 | `wrangler.jsonc`            | That Worker's config. `worker/tsconfig.json` type-checks it separately.                  |
 
 Org pages live under `/o/[org]` rather than `/[org]` so that no org slug can ever collide
