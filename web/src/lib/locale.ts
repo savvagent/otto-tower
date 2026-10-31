@@ -30,7 +30,7 @@ export type Locale = (typeof locales)[number];
  * The supported locales, taken from Paraglide's generated runtime.
  *
  * Never re-typed here. That runtime is generated from
- * `project.inlang/settings.json`, which a `of-core` test asserts against
+ * `project.inlang/settings.json`, which a `tower-core` test asserts against
  * `SUPPORTED_LOCALES` — so this list is transitively the same one the server
  * validates `PATCH /api/me` against, and a locale offered here is a locale the
  * server will accept.
@@ -109,7 +109,7 @@ function browserStore(): LocaleStore | undefined {
  * The best supported match for what the browser says it wants.
  *
  * Matches on the primary subtag, so `es-419` and `es-MX` are both Spanish —
- * the same rule `of_core::i18n::Locale::from_str` and `of_web::i18n::negotiate`
+ * the same rule `tower_core::i18n::Locale::from_str` and `tower_web::i18n::negotiate`
  * apply on the server. Refusing a region-qualified tag would hand English to a
  * browser that was perfectly clear about what it wanted.
  */

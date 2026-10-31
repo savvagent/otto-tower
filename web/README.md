@@ -30,7 +30,7 @@ sent anywhere else.
 A SvelteKit server rendering these pages would therefore have to hold that credential to
 fetch on the user's behalf: a second process with the keys to every console session, for
 pages that are behind a login and cannot be cached anyway. Building to static files that
-`of-server` serves beside `/api` keeps the cookie in exactly one place — the browser — and
+`tower-server` serves beside `/api` keeps the cookie in exactly one place — the browser — and
 makes CORS a non-question, because there is no second origin.
 
 The same fact drives `vite.config.ts`. Dev proxies `/api`, `/auth`, `/oauth`, and
@@ -45,7 +45,7 @@ the platform.
 The console does not sign anyone in. **Sign in** is a full navigation to `/auth/login`
 (never `goto`: it is a server route that redirects to another origin, so links to it carry
 `data-sveltekit-reload`), which sends the browser to the platform; the platform sends it
-back to `/auth/callback`, where `of-web` redeems the code, stores the platform's token pair
+back to `/auth/callback`, where `tower-web` redeems the code, stores the platform's token pair
 server-side, and sets `__Host-of_session`. The browser holds only that opaque cookie.
 `GET /api/session` answers who is signed in, to which org, with what role.
 
@@ -138,12 +138,12 @@ Three things about the toolchain that the obvious reading gets wrong, all verifi
 bare `npx svelte-check` in a fresh clone reports missing modules until `npm run paraglide:compile`
 has run once.
 
-**What is not translated, on purpose.** The MCP surface — `of-mcp` tool descriptions and
-`of-core` error messages — stays English: its reader is an LLM that has never seen these docs,
+**What is not translated, on purpose.** The MCP surface — `tower-mcp` tool descriptions and
+`tower-core` error messages — stays English: its reader is an LLM that has never seen these docs,
 and translating it would fragment the one audience it has. Commands, JSON/TOML snippets, config
 paths, product names, and every wire value stay verbatim; a translated `--transport http` is a
 broken command. The two server-rendered pages (`/oauth/authorize`'s consent screen and its error
-page) are localized, but by a hand-written table in `crates/of-web/src/i18n.rs`, because they
+page) are localized, but by a hand-written table in `crates/tower-web/src/i18n.rs`, because they
 have no client-side JS to swap strings and share no keys with these catalogs.
 
 ## Which language, and how it is remembered
@@ -175,15 +175,15 @@ language for it.
 
 | Path                        | What it is                                                                               |
 | --------------------------- | ---------------------------------------------------------------------------------------- |
-| `src/lib/api.ts`            | The only place that talks to `of-web`. `ApiError` carries the stable `code`.             |
-| `src/lib/types.ts`          | The wire types, transcribed from `of-web`'s OpenAPI document.                            |
+| `src/lib/api.ts`            | The only place that talks to `tower-web`. `ApiError` carries the stable `code`.          |
+| `src/lib/types.ts`          | The wire types, transcribed from `tower-web`'s OpenAPI document.                         |
 | `src/lib/session.svelte.ts` | Who is signed in. A rune module, not a store.                                            |
 | `src/lib/org.svelte.ts`     | The org the current route is about, via context.                                         |
 | `src/lib/login.ts`          | Starting sign-in, and the loop guard.                                                    |
 | `src/lib/platform.ts`       | Links into the platform's own console.                                                   |
 | `src/lib/poll.svelte.ts`    | Polling a page hands to an `$effect`. The overview and `/queue` use it; `/repos` should. |
 | `src/routes/`               | Public pages at the root; org pages under `/o/[org]`.                                    |
-| `worker/index.ts`           | The Cloudflare Worker: serves this bundle, proxies the API to `of-server`.               |
+| `worker/index.ts`           | The Cloudflare Worker: serves this bundle, proxies the API to `tower-server`.            |
 | `wrangler.jsonc`            | That Worker's config. `worker/tsconfig.json` type-checks it separately.                  |
 
 Org pages live under `/o/[org]` rather than `/[org]` so that no org slug can ever collide
@@ -195,7 +195,7 @@ by what the server redirects to, and must not be renamed here alone.
 
 `npm run deploy` uploads `build/` and `worker/index.ts` as one Worker: Cloudflare serves the
 SPA from its own network and the Worker forwards `/api`, `/auth`, `/oauth`, `/.well-known`, `/mcp`,
-`/platform`, `/webhooks`, `/healthz` and `/readyz` to `of-server`.
+`/platform`, `/webhooks`, `/healthz` and `/readyz` to `tower-server`.
 
 **It deploys `--env production`, and that is not a formality.** The default configuration
 names a _different_ Worker (`otto-factory-console-dev`) pointing at `http://127.0.0.1:8080`,
@@ -205,18 +205,18 @@ rather than quietly serving production traffic.
 
 It proxies rather than redirecting for the same reason the app is a SPA at all — the
 `__Host-` cookie is bound to one origin, so the API cannot live on a second hostname. The
-prefix list in `worker/index.ts` mirrors `API_PREFIXES` in `crates/of-server/src/lib.rs` and
+prefix list in `worker/index.ts` mirrors `API_PREFIXES` in `crates/tower-server/src/lib.rs` and
 must not drift from it — `worker/index.test.ts` is the half of that check which lives here,
 and `api_prefixes_do_not_match_by_string_prefix_alone` is the other half.
 
-Two things on the `of-server` side are not optional and are easy to miss:
+Two things on the `tower-server` side are not optional and are easy to miss:
 `OF_ALLOWED_HOSTS` must name the origin's own hostname, or every authenticated MCP call
 fails while everything else looks healthy; and the origin must refuse traffic that did not
 come through Cloudflare, because `OF_CLIENT_IP_HEADER=cf-connecting-ip` is only trustworthy
 while Cloudflare is the one writing it. [`docs/deploy/cloudflare.md`](../docs/deploy/cloudflare.md)
 has both, and what a local `wrangler dev` run proved about each.
 
-None of this is required to run the console. `of-server` still serves `build/` itself, which
+None of this is required to run the console. `tower-server` still serves `build/` itself, which
 is what a self-hosted deployment does.
 
 ## Adding a client to the connect page

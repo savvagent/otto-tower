@@ -69,22 +69,22 @@ Registering this service with a platform, and the one-time cutover, are in
 
 ## Status
 
-Milestone 1, tasks 2–12 of 13 complete. `of-server` binds a port and serves every surface
+Milestone 1, tasks 2–12 of 13 complete. `tower-server` binds a port and serves every surface
 on it, and two real coding agents have coordinated on one queue through it — see
 [`docs/clients/matrix.md`](docs/clients/matrix.md). What remains of Milestone 1 is the
 first live deploy (task 13) and CI (task 1). Milestone 2 (GitHub App + JIRA two-way sync,
 plus the console UI for it) is complete —
-[`docs/plans/2026-09-03-of-trackers.md`](docs/plans/2026-09-03-of-trackers.md).
+[`docs/plans/2026-09-03-tower-trackers.md`](docs/plans/2026-09-03-tower-trackers.md).
 
 | Crate | State |
 |---|---|
-| `of-core` | ✅ repos, jobs, leases, messages, change-watch, platform lifecycle events |
-| `of-mcp` | ✅ Streamable HTTP MCP, 27 tools, platform-introspected bearer auth |
-| `of-billing` | ✅ price list, quota policy, usage outbox + shipper |
-| `of-trackers` | ✅ GitHub App + JIRA two-way sync (milestone 2) |
-| `of-web` | ✅ console API (session cookie or platform bearer token), console sign-in, tracker console, platform webhooks |
-| `of-server` | ✅ config, startup migrations, router assembly, health, usage shipper |
-| `of-testkit` | ✅ in-process mock of the platform, for tests |
+| `tower-core` | ✅ repos, jobs, leases, messages, change-watch, platform lifecycle events |
+| `tower-mcp` | ✅ Streamable HTTP MCP, 27 tools, platform-introspected bearer auth |
+| `tower-billing` | ✅ price list, quota policy, usage outbox + shipper |
+| `tower-trackers` | ✅ GitHub App + JIRA two-way sync (milestone 2) |
+| `tower-web` | ✅ console API (session cookie or platform bearer token), console sign-in, tracker console, platform webhooks |
+| `tower-server` | ✅ config, startup migrations, router assembly, health, usage shipper |
+| `tower-testkit` | ✅ in-process mock of the platform, for tests |
 | `web/` | ✅ SvelteKit 2 / Svelte 5 console — signs in through the platform |
 
 > The console signs in through the platform (OAuth authorization code + PKCE) and keeps its
@@ -125,8 +125,8 @@ applied. Port 15433 is deliberately non-standard so it cannot clash with a syste
 or with dark-agent's container on 15432.
 
 ```bash
-cargo test -p of-core --test isolation   # tenant isolation only
-cargo test -p of-core --test queue       # queue behaviour only
+cargo test -p tower-core --test isolation   # tenant isolation only
+cargo test -p tower-core --test queue       # queue behaviour only
 ```
 
 The console has its own gate, which is the same two checks in the other language:
@@ -145,11 +145,11 @@ npm run build     # static bundle into web/build
 ### Running the server
 
 ```bash
-cargo run -p of-server
+cargo run -p tower-server
 ```
 
 It reads `.env`, applies migrations, and serves everything on one port (it needs a reachable
-platform to authenticate anyone; a local one is `otto-platform-server` from
+platform to authenticate anyone; a local one is `savvagent-platform-server` from
 [`savvagent/otto-platform`](https://github.com/savvagent/otto-platform)):
 
 | Path | Surface |
@@ -180,7 +180,7 @@ podman build -t otto-tower .
 
 One image: the console bundle is built by a `node` stage, the binary by a `rust` stage, and
 both land in a `debian-slim` runtime that runs as a non-root user. No database is needed to
-build it — every statement in `of-core` is a runtime `sqlx::query` rather than a `query!`
+build it — every statement in `tower-core` is a runtime `sqlx::query` rather than a `query!`
 macro, so there is no compile-time schema check and no `.sqlx` offline data to keep current.
 
 On Fly.io, [`fly.toml`](fly.toml) carries the non-secret configuration and the health check.
@@ -199,7 +199,7 @@ Migrations run at startup under a Postgres advisory lock, so several machines bo
 together is safe: the losers wait rather than racing through the same DDL.
 
 The last two secrets come from registering this service at the platform
-(`otto-platform-server resource register` and `resource set-webhook`), and `fly.toml` sets
+(`savvagent-platform-server resource register` and `resource set-webhook`), and `fly.toml` sets
 `OF_PLATFORM_URL`, `OF_PUBLIC_URL`, and `OF_RESOURCE_URI`. Two of those are easy to get
 subtly wrong:
 
@@ -217,14 +217,14 @@ resource, set the secrets) is a checklist in [`docs/deploy/fly.md`](docs/deploy/
 
 | Path | What it is |
 |---|---|
-| `crates/of-core` | Domain + all SQL. Every tenant operation takes an `OrgId`. |
-| `crates/of-core/migrations` | Append-only schema, from a domain-only baseline. |
-| `crates/of-mcp` | MCP server and tool surface. |
-| `crates/of-billing` | The tool classification, the blocked-org policy, and the usage outbox/shipper. |
-| `crates/of-trackers` | GitHub App + JIRA sync. |
-| `crates/of-web` | Console REST API, tracker and platform webhooks. |
-| `crates/of-server` | The binary: config, migrations, router assembly, health, usage shipper. |
-| `crates/of-testkit` | Dev-only mock of the platform's resource-server API. |
+| `crates/tower-core` | Domain + all SQL. Every tenant operation takes an `OrgId`. |
+| `crates/tower-core/migrations` | Append-only schema, from a domain-only baseline. |
+| `crates/tower-mcp` | MCP server and tool surface. |
+| `crates/tower-billing` | The tool classification, the blocked-org policy, and the usage outbox/shipper. |
+| `crates/tower-trackers` | GitHub App + JIRA sync. |
+| `crates/tower-web` | Console REST API, tracker and platform webhooks. |
+| `crates/tower-server` | The binary: config, migrations, router assembly, health, usage shipper. |
+| `crates/tower-testkit` | Dev-only mock of the platform's resource-server API. |
 | `Dockerfile`, `fly.toml` | The image and its Fly.io deployment. |
 | `web/` | SvelteKit 2 + Svelte 5 console. |
 

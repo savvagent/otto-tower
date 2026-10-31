@@ -30,7 +30,7 @@ WORKDIR /app
 COPY . .
 
 # No DATABASE_URL, and no `.sqlx` offline data, because there is nothing to
-# check against at compile time: every statement in of-core is a runtime
+# check against at compile time: every statement in tower-core is a runtime
 # `sqlx::query`, not a `query!` macro. That is what makes this image buildable
 # on a machine with no database.
 #
@@ -39,8 +39,8 @@ COPY . .
 # same RUN — anything left there vanishes with the mount.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release -p of-server \
-    && cp target/release/of-server /usr/local/bin/of-server
+    cargo build --release -p tower-server \
+    && cp target/release/tower-server /usr/local/bin/tower-server
 
 # ---------------------------------------------------------------- runtime
 FROM debian:bookworm-slim AS runtime
@@ -57,7 +57,7 @@ RUN apt-get update \
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin factory
 USER factory
 
-COPY --from=build   /usr/local/bin/of-server /usr/local/bin/of-server
+COPY --from=build   /usr/local/bin/tower-server /usr/local/bin/tower-server
 COPY --from=console /web/build               /srv/console
 
 # The console bundle's location is the one path baked into the image, so it is
@@ -73,4 +73,4 @@ EXPOSE 8080
 # shell form it would be a child of /bin/sh, which does not forward signals —
 # the graceful shutdown would never run and every deploy would hard-kill
 # whatever was in flight.
-ENTRYPOINT ["/usr/local/bin/of-server"]
+ENTRYPOINT ["/usr/local/bin/tower-server"]

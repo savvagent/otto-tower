@@ -134,7 +134,7 @@ jobs:
 
   # Mirrors web/README's three commands: check (svelte-check + tsc over
   # worker/), lint (prettier --check), test (vitest). No build here — the
-  # build step has no gate of its own beyond these three, and of-server's own
+  # build step has no gate of its own beyond these three, and tower-server's own
   # startup requires `web/` to be built first, not CI.
   web:
     runs-on: ubuntu-latest
@@ -220,14 +220,14 @@ jobs:
             chore
             revert
           scopes: |
-            of-core
+            tower-core
             otto-platform
-            of-mcp
-            of-billing
-            of-trackers
-            of-web
-            of-server
-            of-testkit
+            tower-mcp
+            tower-billing
+            tower-trackers
+            tower-web
+            tower-server
+            tower-testkit
             web
             docs
             ci

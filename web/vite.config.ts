@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 /**
- * In production the console and the API are one origin: `of-server` serves the
+ * In production the console and the API are one origin: `tower-server` serves the
  * built bundle beside `/api`, `/auth`, and `/.well-known`.
  *
  * Development has to reproduce that, not merely approximate it. The session

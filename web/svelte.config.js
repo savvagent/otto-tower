@@ -9,7 +9,7 @@ import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
  * A SvelteKit server rendering these pages would have to hold that credential
  * to fetch on the user's behalf — a second process with the keys to every
  * console session, for pages that are behind a login and cannot be cached
- * anyway. Building to static files that `of-server` serves on the same origin
+ * anyway. Building to static files that `tower-server` serves on the same origin
  * as `/api` keeps the cookie in exactly one place: the browser.
  *
  * `fallback` is what makes deep links work. Every route below `/` is resolved

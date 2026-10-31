@@ -54,7 +54,7 @@ describe('detect', () => {
   it('matches a region-qualified tag to its language', () => {
     // A browser sending es-419 means Spanish. Handing it English because of the
     // region would be the opposite of what it asked for — and it is the same
-    // rule of_core::i18n::Locale::from_str applies on the server.
+    // rule tower_core::i18n::Locale::from_str applies on the server.
     expect(detect(['es-419'])).toBe('es');
     expect(detect(['de-CH', 'de'])).toBe('de');
     expect(detect(['hi_IN'])).toBe('hi');

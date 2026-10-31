@@ -5,7 +5,7 @@
  * dynamic — `/api`, `/auth` (console sign-in), `/oauth`, `/.well-known`, `/mcp`,
  * `/platform` and `/webhooks` (the signed webhook receivers), and the health
  * probes — to
- * `of-server`. The browser talks to exactly one hostname, which is not a
+ * `tower-server`. The browser talks to exactly one hostname, which is not a
  * performance decision: the console's session is an `HttpOnly`, `__Host-`
  * prefixed cookie, and `__Host-` means the browser refuses to store it unless it
  * is `Secure`, has `Path=/`, and carries no `Domain`. Put the SPA on one
@@ -20,16 +20,16 @@
  * session cookie bound to the old host is a session the new one cannot use.
  *
  * That redirect applies only to a deployment fronted by this Worker. Production
- * today is not (the public hosts resolve straight to Fly), so `of-server` makes
+ * today is not (the public hosts resolve straight to Fly), so `tower-server` makes
  * the same redirect itself (`legacy_console_redirect` in
- * `crates/of-server/src/lib.rs`); with the Worker in front, the Worker answers
+ * `crates/tower-server/src/lib.rs`); with the Worker in front, the Worker answers
  * first and the origin never sees the request.
  */
 
 /**
- * Path prefixes that belong to `of-server` rather than to the console's own
+ * Path prefixes that belong to `tower-server` rather than to the console's own
  * client-side routing. **This list mirrors `API_PREFIXES` in
- * `crates/of-server/src/lib.rs`** and must not drift from it: the server keeps
+ * `crates/tower-server/src/lib.rs`** and must not drift from it: the server keeps
  * the same list to decide what gets a JSON `404` instead of `index.html`, and a
  * prefix that exists on one side only is a route that behaves differently
  * depending on whether Cloudflare is in front.
@@ -67,7 +67,7 @@ export function belongsToOrigin(path: string): boolean {
 export interface Env {
   /** The built `web/build` bundle, uploaded with the Worker. */
   ASSETS: Fetcher;
-  /** Where `of-server` actually listens, e.g. `https://otto-factory-mcp.fly.dev`. */
+  /** Where `tower-server` actually listens, e.g. `https://otto-factory-mcp.fly.dev`. */
   OF_ORIGIN: string;
   /**
    * Deprecated public hostnames, comma separated — the same value as the
@@ -113,7 +113,7 @@ export function movesToCanonical(path: string): boolean {
 const BARE_HOSTNAME = /^[a-z0-9-]+(\.[a-z0-9-]+)*$/;
 
 /**
- * `OF_LEGACY_HOSTS`, parsed as strictly as `of-server` parses it. `[]` when it
+ * `OF_LEGACY_HOSTS`, parsed as strictly as `tower-server` parses it. `[]` when it
  * is unset or blank (outside a rename), `null` when it is set but not a list of
  * bare hostnames.
  */
@@ -148,7 +148,7 @@ function canonicalOrigin(env: Env): string | null {
  *
  * - `OF_LEGACY_HOSTS` malformed: every host's console except the canonical
  *   one, which is still served when `OF_PUBLIC_URL` names it.
- * - `OF_LEGACY_HOSTS` names `OF_PUBLIC_URL`'s own host (refused by of-server at
+ * - `OF_LEGACY_HOSTS` names `OF_PUBLIC_URL`'s own host (refused by tower-server at
  *   boot): every host's console, the canonical one included, since serving it
  *   would mean redirecting it to itself.
  * - `OF_PUBLIC_URL` unusable: only a legacy host's console, which has nowhere
@@ -172,16 +172,16 @@ function legacyDecision(url: URL, env: Env): Response | null {
     return misconfigured(
       'this Worker’s OF_LEGACY_HOSTS is not a comma-separated list of bare hostnames ' +
         '(no scheme, port, path, empty entry or trailing dot), so it cannot tell whether ' +
-        'this host is a legacy one. Set it to the same value as of-server’s.'
+        'this host is a legacy one. Set it to the same value as tower-server’s.'
     );
   }
   if (canonical && hosts.includes(new URL(canonical).hostname)) {
-    // of-server refuses to boot with this (`the_canonical_host_cannot_also_be_legacy`).
+    // tower-server refuses to boot with this (`the_canonical_host_cannot_also_be_legacy`).
     // Here it would 308 the canonical host's console to itself, forever.
     return misconfigured(
       'this Worker’s OF_LEGACY_HOSTS names OF_PUBLIC_URL’s own host, so the canonical ' +
         'console would be redirected to itself. Remove the canonical host from ' +
-        'OF_LEGACY_HOSTS; of-server refuses the same value at startup.'
+        'OF_LEGACY_HOSTS; tower-server refuses the same value at startup.'
     );
   }
   if (!hosts.includes(host)) {
@@ -191,7 +191,7 @@ function legacyDecision(url: URL, env: Env): Response | null {
     return misconfigured(
       'this Worker has OF_LEGACY_HOSTS but no usable OF_PUBLIC_URL, so it does not ' +
         'know the canonical host to send a legacy host’s console to. Set OF_PUBLIC_URL ' +
-        'to the same https:// origin as of-server’s.'
+        'to the same https:// origin as tower-server’s.'
     );
   }
   const location = `${canonical}${url.pathname}${url.search}`;
@@ -237,7 +237,7 @@ export default {
       // a URL constructor throwing inside a proxy hop, which reaches the caller
       // as a bare 500 with nothing naming the cause.
       return misconfigured(
-        'this Worker has no OF_ORIGIN, so it does not know where of-server is. ' +
+        'this Worker has no OF_ORIGIN, so it does not know where tower-server is. ' +
           'Deploy with --env production, or pass --var OF_ORIGIN:https://…'
       );
     }

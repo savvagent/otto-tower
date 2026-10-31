@@ -1,5 +1,5 @@
 /**
- * The one place the console talks to `of-web`.
+ * The one place the console talks to `tower-web`.
  *
  * Three things hold here, and each of them is a rule the server also keeps.
  *
@@ -8,7 +8,7 @@
  * follows a URL loads a page and burns nothing.
  *
  * **The session is never touched by script.** It is an `HttpOnly`,
- * `__Host-`-prefixed cookie that `of-web` sets when the sign-in through the
+ * `__Host-`-prefixed cookie that `tower-web` sets when the sign-in through the
  * Savvagent platform finishes (`/auth/login` → `/auth/callback`), so there is no token
  * to attach and nothing to store. Requests are same-origin and the browser sends
  * it; `credentials` is left at its default for exactly that reason, and a change

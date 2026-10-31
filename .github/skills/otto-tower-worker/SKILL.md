@@ -324,8 +324,8 @@ Requirements:
   own trigger table). You will not be told the trio has cleared — a
   parent-dispatched follow-up subagent finishes the job from here. Do not
   report success at this point; `NEEDS_REVIEWERS` is your success outcome.
-- Title the PR `<type>(<scope>): <subject>` (e.g. `fix(of-core): ...`,
-  `feat(of-mcp): ...`) — this repo's `pr-title` CI check enforces it, and
+- Title the PR `<type>(<scope>): <subject>` (e.g. `fix(tower-core): ...`,
+  `feat(tower-mcp): ...`) — this repo's `pr-title` CI check enforces it, and
   release-please computes the version bump and changelog from it
   automatically once its own periodic release PR merges. There is no
   separate release-cutting step for you to run; do not tag a version or edit

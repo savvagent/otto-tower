@@ -41,7 +41,7 @@ Agent tool:
       capability that could live in a customer's own skill belongs in the skill, not the server
     - Tenant isolation: if a tenant table is added or touched, does the spec name the org_id column,
       the 0001_baseline.sql registration, the <table>_tenant_isolation policy, and the cross-org negative test?
-    - Metering: if an MCP tool is added, does the spec name its of-billing::classify classification?
+    - Metering: if an MCP tool is added, does the spec name its tower-billing::classify classification?
     - Public-interface changes: is any non-additive change to the MCP tool surface, the console API,
       the OAuth/discovery endpoints, the config surface, or the schema named explicitly? (An applied
       migration must never be edited.)
@@ -83,9 +83,9 @@ Agent tool:
       cargo clippy --all-targets -- -D warnings, cargo fmt --all, and for web/ npm run check /
       npm run lint / npm test)?
     - Does a task touching a tenant table or tenant-scoped function include a cross-org negative test step?
-    - Does a task adding an MCP tool include a of-billing::classify step and a tool description
+    - Does a task adding an MCP tool include a tower-billing::classify step and a tool description
       written for an LLM that has never read the docs?
-    - Does any task put SQL outside of-core?
+    - Does any task put SQL outside tower-core?
     - Does a task adding a migration add a NEW file (never editing an applied one), keeping
       0001_baseline.sql last?
     - Are the out-of-band artifacts the task touches (container image, console bundle, Cloudflare
@@ -120,7 +120,7 @@ Agent tool:
     commands, and any out-of-band artifact the task touches>
 
     Tests need a real Postgres: `podman compose up -d` (Postgres 16 on host port 15433) and a `.env`
-    with DATABASE_URL (`cp .env.example .env`). Every SQL statement lives in of-core. Run
+    with DATABASE_URL (`cp .env.example .env`). Every SQL statement lives in tower-core. Run
     `cargo fmt --all` before every Rust commit. Never add AI self-attribution to anything.
 
     ## AUTONOMOUS MODE — IMPORTANT
@@ -177,8 +177,8 @@ Agent tool:
     - Missing requirements (claimed implemented but actually skipped)
     - Extra work (built features not requested)
     - Misinterpretations (right feature, wrong way)
-    - Repo-specific gotchas: SQL outside of-core, a tenant table without an org_id / RLS policy /
-      cross-org negative test, an MCP tool without a of-billing::classify entry, an edited migration,
+    - Repo-specific gotchas: SQL outside tower-core, a tenant table without an org_id / RLS policy /
+      cross-org negative test, an MCP tool without a tower-billing::classify entry, an edited migration,
       a 403 where the product answers 404, a credential spent on a GET, an unwrap() outside tests,
       a test that spawns a Watcher without calling shutdown().
 
@@ -209,7 +209,7 @@ Agent tool:
     - Units decomposed for independent testing?
     - Following the file structure from the plan?
     - Did this change create or grow files significantly beyond what the task required?
-    - Repo conventions from CLAUDE.md: all SQL in of-core; errors written for an LLM caller with a
+    - Repo conventions from CLAUDE.md: all SQL in tower-core; errors written for an LLM caller with a
       stable Error::code() and an honest retriable(); no unwrap() outside tests; no silent fallback
       on a resolution failure; comments that explain WHY, not what the next line does.
 
@@ -270,7 +270,7 @@ Agent tool:
       tests, no panics on untrusted input, no silent fallback on a resolution failure
     - Async: Send + Sync seams, no blocking work in an async task, no transaction held across a long
       poll or an outbound request
-    - sqlx: statements confined to of-core, explicit org_id predicates, correct use of FOR UPDATE,
+    - sqlx: statements confined to tower-core, explicit org_id predicates, correct use of FOR UPDATE,
       enum round-tripping, and #[sqlx::test] integration tests against a real Postgres (there are no
       database mocks, on purpose)
     - Tests: a tenant-scoped function needs a cross-org negative test; an RLS policy test must
@@ -296,8 +296,8 @@ Agent tool:
       live in a customer's skill belongs in the skill; jobs carry opaque metadata the server never
       interprets); coding-agent agnostic (no client-specific hook, plugin, skill, or tool annotation;
       agentType is never validated against a list)
-    - Crate boundaries: of-core owns the domain and ALL SQL with no HTTP and no auth; of-auth,
-      of-billing, of-mcp, of-web, of-trackers layer on it; of-server only assembles
+    - Crate boundaries: tower-core owns the domain and ALL SQL with no HTTP and no auth; of-auth,
+      tower-billing, tower-mcp, tower-web, tower-trackers layer on it; tower-server only assembles
     - Tenant isolation's two guards: the Tx/OrgId API shape and the RLS policies, plus the
       startup check that vouches for guard 2
     - The console API staying read-only over the queue; the router and OpenAPI document built from

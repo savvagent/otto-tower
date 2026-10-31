@@ -1,6 +1,6 @@
 {
   // The console, deployed to Cloudflare as one Worker that serves the built SPA
-  // and forwards everything dynamic to of-server. See docs/deploy/cloudflare.md
+  // and forwards everything dynamic to tower-server. See docs/deploy/cloudflare.md
   // for the account-side setup this file cannot express, and worker/index.ts for
   // why it is a proxy rather than a second origin.
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -25,7 +25,7 @@
     // The alternative is a glob list — ["/api/*", "/oauth/*", …] — which is
     // cheaper, because assets would be served without an invocation. It is also
     // a second, differently-shaped copy of a rule that already exists twice
-    // (here and in of-server), expressed in a pattern language whose treatment
+    // (here and in tower-server), expressed in a pattern language whose treatment
     // of `/` inside `*` decides whether `/api/orgs/nope` reaches the origin at
     // all. When that glob is wrong the failure is silent and specific: the asset
     // router answers with index.html and a 200, and an agent retries forever
@@ -38,7 +38,7 @@
   },
 
   "vars": {
-    // Where of-server listens. Not a secret — a hostname.
+    // Where tower-server listens. Not a secret — a hostname.
     //
     // The default is the local origin on purpose. A deploy that forgets to name
     // an environment then proxies to somewhere that is not listening and fails
@@ -57,7 +57,7 @@
     "production": {
       "name": "otto-factory-console",
       // The rename cutover (docs/deploy/fly.md, step 8) adds OF_PUBLIC_URL and
-      // OF_LEGACY_HOSTS here, with the same values as of-server's, so the old
+      // OF_LEGACY_HOSTS here, with the same values as tower-server's, so the old
       // host's console pages and /auth/login 308 to the new host. They are
       // absent until then on purpose: set early, they would redirect browsers
       // to a host that is not serving yet.

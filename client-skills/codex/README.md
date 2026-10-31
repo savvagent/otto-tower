@@ -28,6 +28,6 @@ Follow `../README.md`'s contribution checklist exactly. In short, a PR adding th
 template should be able to tick every box there: name the Codex CLI version tested, name
 the exact mechanism used (with a link to Codex CLI's own docs for it), list every
 Savvagent Tower MCP tool called and with what arguments, state plainly whether it was
-verified against a real running `of-server` or is an untested hypothesis, and follow the
+verified against a real running `tower-server` or is an untested hypothesis, and follow the
 silent-failure / no-auto-registration / claim-only-what-you-created rules from the
 contract.

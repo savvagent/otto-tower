@@ -12,7 +12,7 @@
 # creates the `otto_app` role, which needs CREATEROLE that the managed `savvagent-pg`
 # cluster's per-app roles do not get. The connecting role, created by
 # `fly postgres attach`, is a superuser, so it BYPASSES RLS entirely, FORCE included:
-# isolation rests wholly on `otto_tenant::Db::begin` issuing `SET LOCAL ROLE otto_app`,
+# isolation rests wholly on `savvagent_tenant::Db::begin` issuing `SET LOCAL ROLE otto_app`,
 # and any statement that runs directly on the pool (every migration, the usage shipper)
 # sees every org's rows. Savvagent Tower keeps its own migration history -- a squashed
 # domain-only baseline since the platform cutover -- and never runs the platform's.
@@ -44,7 +44,7 @@ primary_region = "iad"
   # move to tower.savvagent.com").
   OF_PUBLIC_URL = "https://tower.savvagent.com"
   # The token audience: exactly the resource_uri registered at the platform
-  # (`otto-platform-server resource register <this>`), and the HTTP Basic user on
+  # (`savvagent-platform-server resource register <this>`), and the HTTP Basic user on
   # every call this app makes to it. Passkeys are NOT bound to this hostname any
   # more -- they belong to the platform's.
   OF_RESOURCE_URI = "https://tower.savvagent.com/mcp"
@@ -53,7 +53,7 @@ primary_region = "iad"
   # it (docs/deploy/cloudflare.md, trap 1) and it is our own name, so it costs
   # nothing to accept. The two old public names are NOT here: they are in
   # OF_REDIRECT_HOSTS below. OF_LEGACY_HOSTS and OF_LEGACY_SUNSET are not set (the
-  # support for them stays in of-server).
+  # support for them stays in tower-server).
   OF_ALLOWED_HOSTS = "otto-factory-mcp.fly.dev"
   # Old public hosts that only redirect (savvagent/otto-platform#135): every
   # request to one gets a 308 to the same path and query on OF_PUBLIC_URL, for
@@ -66,14 +66,14 @@ primary_region = "iad"
   OF_PLATFORM_URL = "https://savvagent.com"
   # The console's OAuth client at the platform, for console sign-in. NOT a secret
   # (a public client; PKCE is what binds a code to its browser). Printed by
-  # `otto-platform-server client register --name "Savvagent Tower console"
+  # `savvagent-platform-server client register --name "Savvagent Tower console"
   # --redirect-uri https://tower.savvagent.com/auth/callback --first-party`
   # (docs/deploy/fly.md). Unset, `/auth/login` answers 503
   # console_login_disabled and everything else runs.
   OF_CONSOLE_CLIENT_ID = "sav_client_XRACC-VcMXZQpX7jG_8Oplm9IQNTV-KrK6KdxJE-MCk"
   OF_STATIC_DIR = "/srv/console"
   OF_LOG_FORMAT = "json"
-  RUST_LOG = "info,of_server=info,of_mcp=info,of_web=info"
+  RUST_LOG = "info,tower_server=info,tower_mcp=info,tower_web=info"
 
   # If Cloudflare is put in front of this app, OF_ALLOWED_HOSTS has to name this
   # app's own hostname because the Worker's subrequest arrives with it in Host.

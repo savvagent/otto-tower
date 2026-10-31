@@ -29,7 +29,7 @@ renames the internals, and a new hit of `otto-tower` or `otto-factory` outside t
 (`git grep -i -e otto-tower -e otto-factory` shows what is left):
 
 - `otto-tower` where it is an identifier rather than a name people read: the billing service slug and the
-  meter `otto-tower/jobs_completed` (`of_billing::METER_JOBS_COMPLETED`, never renamed by the rebrand);
+  meter `otto-tower/jobs_completed` (`tower_billing::METER_JOBS_COMPLETED`, never renamed by the rebrand);
   the tracker trigger label default `otto-tower` (stored on bindings, so also in the tests that assert
   it); the GitHub App slug `otto-tower` (`github.com/apps/otto-tower`, in a test); the `otto-tower/`
   User-Agent of the GitHub and JIRA clients; the container image tag (`podman build -t otto-tower .`);
@@ -59,7 +59,7 @@ renames the internals, and a new hit of `otto-tower` or `otto-factory` outside t
 - `CHANGELOG.md`, and the dated historical `docs/specs/*` and `docs/plans/*` (including the design
   of record's filename `2026-09-01-otto-factory-design.md`, which links depend on).
 - The `otto-factory.savvagent.com` host in the historical cutover runbook
-  (`docs/deploy/fly.md`) and in the `OF_LEGACY_HOSTS` support in `of-server`, whose env values are no
+  (`docs/deploy/fly.md`) and in the `OF_LEGACY_HOSTS` support in `tower-server`, whose env values are no
   longer set. User-facing docs and `ci.yml`'s `environment.url` link to `tower.savvagent.com`.
 - Historical session records in `client-skills/claude-code/README.md` (the verification notes keep the
   repo slug and idempotency-key examples they were recorded with).
@@ -68,8 +68,8 @@ renames the internals, and a new hit of `otto-tower` or `otto-factory` outside t
 - The applied migration `0001_baseline.sql` (its comments and the `trigger_label` default): an
   applied migration is never edited.
 - The old meter key `otto-factory/jobs_completed` (and its `otto-factory/` prefix) where it names
-  what is being renamed away from: `0006_meter_otto_tower.sql`, `crates/of-core/tests/meter_rename.rs`,
-  `of_billing::RETIRED_METERS` with its doc example and `crates/of-billing/tests/outbox.rs`, and the
+  what is being renamed away from: `0006_meter_otto_tower.sql`, `crates/tower-core/tests/meter_rename.rs`,
+  `tower_billing::RETIRED_METERS` with its doc example and `crates/tower-billing/tests/outbox.rs`, and the
   runbook's preflight and rollback in `docs/deploy/fly.md`.
 - The old `otto-factory-worker:trio-cleared:` marker named in `.github/skills/otto-tower-worker/SKILL.md`'s
   transition note (it says that marker no longer counts).
@@ -120,7 +120,7 @@ required for any new tenant table:
    the table's owner, and the connecting role is neither a superuser nor `BYPASSRLS`.
    **Nothing assumes which of the two shapes it is in.** `Db::verify_tenant_isolation`
    reads it back out of the catalog as the role a tenant transaction actually runs as,
-   and `of-server` refuses to bind a port unless one of them holds. Guard 2 is the one
+   and `tower-server` refuses to bind a port unless one of them holds. Guard 2 is the one
    guard the *environment* can switch off, so it is the one guard that gets checked at
    startup rather than trusted.
 
@@ -148,7 +148,7 @@ bypasses RLS, so a test of such a policy **must** `SET LOCAL ROLE otto_app` expl
 passes against no policy at all.
 
 **A migration that touches a tenant table's data needs its own `org_id` scoping — RLS is not
-available to supply one.** `of_core::migrate` runs every migration statement on the connection pool
+available to supply one.** `tower_core::migrate` runs every migration statement on the connection pool
 directly, never through `Db::begin`: `app.org_id` is never set and `otto_app` is never assumed.
 What that means depends on which side of guard 2 the connecting role is on. If it is a
 superuser or has `BYPASSRLS` — this deployment's actual shape today, per `docs/deploy/fly.md`
@@ -234,8 +234,8 @@ suite that cannot tell the two guards apart cannot tell you when one has broken.
 podman compose up -d          # Postgres 16 on host port 15433
 cp .env.example .env          # DATABASE_URL for sqlx, and the platform settings for `cargo run`
 cargo test                    # everything
-cargo test -p of-core --test isolation   # tenant isolation
-cargo test -p of-core --test queue       # queue behaviour
+cargo test -p tower-core --test isolation   # tenant isolation
+cargo test -p tower-core --test queue       # queue behaviour
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all
 
@@ -245,7 +245,7 @@ npm run lint                  # prettier --check — the console's `cargo fmt --
 npm test                      # vitest — the Cloudflare Worker's routing rule
 npm run build                 # static bundle into web/build
 
-cargo run -p of-server        # everything on one port, reading .env
+cargo run -p tower-server        # everything on one port, reading .env
 podman build -t otto-tower .   # console stage + rust stage + slim runtime
 ```
 
@@ -253,16 +253,16 @@ podman build -t otto-tower .   # console stage + rust stage + slim runtime
 and `OF_ENCRYPTION_KEY` are required with no defaults; `.env.example` says why for each.
 `OF_CONSOLE_CLIENT_ID` is optional (console sign-in answers `503` without it). Build
 `web/` first or every console page answers `404` while the API works. `cargo test` needs only
-`DATABASE_URL`: the platform is `of-testkit`'s in-process mock, never a live service.
+`DATABASE_URL`: the platform is `tower-testkit`'s in-process mock, never a live service.
 
 Integration tests are `#[sqlx::test]` against a real Postgres — one fresh throwaway
 database per test, migrations auto-applied. There are no mocks for the database, on
 purpose: RLS, `FOR UPDATE`, `LISTEN`/`NOTIFY`, and enum round-tripping are the things most
 likely to be wrong, and a mock cannot tell you about any of them.
 
-The **platform**, by contrast, is mocked — over real HTTP. `crates/of-testkit`'s
+The **platform**, by contrast, is mocked — over real HTTP. `crates/tower-testkit`'s
 `MockPlatform` is an axum server on a loopback port speaking the platform's wire format (it
-reuses `otto-resource`'s own types, so the two cannot drift silently), and tests hand the code
+reuses `savvagent-resource`'s own types, so the two cannot drift silently), and tests hand the code
 under test the *real* `PlatformClient` pointed at it. It models audience (a token is active
 only for the resource server it was minted for), outages (`set_down`), usage dedupe by event
 id, and signed webhooks. A test about identity behavior belongs against it; a test about the
@@ -281,34 +281,34 @@ same as not having it at all, not a crash.)
 
 ## Architecture
 
-One binary (`of-server`) mounts every HTTP surface on one port. The crates are a
+One binary (`tower-server`) mounts every HTTP surface on one port. The crates are a
 compile-time layering discipline, not separate services.
 
 | Crate | Responsibility |
 |---|---|
-| `of-core` | Domain + **all** SQL. No HTTP, no auth. Every tenant fn takes an `OrgId`. |
-| (otto-platform) | Two crates from `savvagent/otto-platform`, pinned by one rev in the workspace `Cargo.toml`: `otto-tenant` (the pinned-transaction/RLS substrate, `Cipher`, the audit-trail pattern) and `otto-resource` (the resource-server client: introspection, usage shipping, member/team lookups, webhook verification). Nothing else — no `otto-core`/`otto-auth`/`otto-billing`, and no identity tables. Never call `otto_tenant::Db::migrate` on this database; use `of_core::migrate`. |
-| `of-mcp` | `rmcp` Streamable HTTP server, tool surface, bearer middleware (introspects at the platform). |
-| `of-billing` | The price list (`classify`), what a completed job records (`completion`), enforcement of the platform's billing block (`meter`), and the usage outbox + shipper. |
-| `of-trackers` | GitHub App + JIRA clients, webhook ingest, two-way sync. |
-| `of-web` | Console REST API (console session cookie or platform bearer token), console sign-in (`/auth/*`), tracker webhooks, the platform's lifecycle webhook. |
-| `of-server` | Config, migrations, router assembly, the usage shipper task, graceful shutdown. |
-| `of-testkit` | Dev-only. `MockPlatform`: the platform's resource-server API, in process. |
+| `tower-core` | Domain + **all** SQL. No HTTP, no auth. Every tenant fn takes an `OrgId`. |
+| (otto-platform) | Two crates from `savvagent/otto-platform`, pinned by one rev in the workspace `Cargo.toml`: `savvagent-tenant` (the pinned-transaction/RLS substrate, `Cipher`, the audit-trail pattern) and `savvagent-resource` (the resource-server client: introspection, usage shipping, member/team lookups, webhook verification). Nothing else — no `otto-core`/`otto-auth`/`otto-billing`, and no identity tables. Never call `savvagent_tenant::Db::migrate` on this database; use `tower_core::migrate`. |
+| `tower-mcp` | `rmcp` Streamable HTTP server, tool surface, bearer middleware (introspects at the platform). |
+| `tower-billing` | The price list (`classify`), what a completed job records (`completion`), enforcement of the platform's billing block (`meter`), and the usage outbox + shipper. |
+| `tower-trackers` | GitHub App + JIRA clients, webhook ingest, two-way sync. |
+| `tower-web` | Console REST API (console session cookie or platform bearer token), console sign-in (`/auth/*`), tracker webhooks, the platform's lifecycle webhook. |
+| `tower-server` | Config, migrations, router assembly, the usage shipper task, graceful shutdown. |
+| `tower-testkit` | Dev-only. `MockPlatform`: the platform's resource-server API, in process. |
 
 `web/` is the console UI — SvelteKit 2 / Svelte 5 runes / Tailwind v4, TypeScript strict —
-built to static files that `of-server` serves beside `/api`. See `web/README.md`.
+built to static files that `tower-server` serves beside `/api`. See `web/README.md`.
 
-**Every SQL statement lives in `of-core`.** A query in `of-mcp` or `of-web` is a bug — it
+**Every SQL statement lives in `tower-core`.** A query in `tower-mcp` or `tower-web` is a bug — it
 bypasses the `Tx` pinning that guard 2 depends on. The one exception is the usage outbox:
-its SQL lives in `of-billing` (`outbox.rs`), because the outbox row must be written in the
+its SQL lives in `tower-billing` (`outbox.rs`), because the outbox row must be written in the
 tool's own `Tx` by the crate that owns metering, and the shipper drains it across all orgs.
 It still writes through the caller's pinned `Tx`. The same file also holds the shipper's org-less
 statements and `rewrite_retired_meters`, the startup rewrite of queued rows on a renamed meter key
-(per org, with both guards); nothing else in `of-billing` touches SQL.
+(per org, with both guards); nothing else in `tower-billing` touches SQL.
 
 ## The MCP surface
 
-`of-mcp` is the only crate a customer's agent talks to, and four conventions hold across
+`tower-mcp` is the only crate a customer's agent talks to, and four conventions hold across
 every tool in it:
 
 - **The caller comes from the request, not the session.** An MCP session spans many HTTP
@@ -333,7 +333,7 @@ every tool in it:
 
 ## The console surface
 
-`of-web` serves the console's REST API — repos, the queue, tracker connections, this
+`tower-web` serves the console's REST API — repos, the queue, tracker connections, this
 service's audit trail — plus two machine endpoints that authenticate by signature rather than
 by token: tracker webhooks (`/webhooks/{provider}`) and the platform's lifecycle webhooks
 (`/platform/webhooks`). It serves **no identity**: no `/oauth/*`, `/api/auth/*`, `/api/me*`,
@@ -383,15 +383,15 @@ members, invites, teams, SSO, tokens, or usage. Those are the platform's, and
   on a fake one turns any token into a directory of who uses the product.
 - **A team id earns its way onto a row, and fails closed.** `repos.team_id` null means
   org-wide, so an unchecked id is dangerous in both directions. `NewRepo`, `RepoPatch`, and
-  `NewJob` take an `of_core::teams::VerifiedTeam`, whose only constructor asks the platform
+  `NewJob` take an `tower_core::teams::VerifiedTeam`, whose only constructor asks the platform
   whether the team exists in the caller's org: unknown or foreign is a `404`, an unreachable
   platform is a `503`, and neither is ever read as "no team". Team *slugs* in query strings
   (`?team=`) resolve the same way. When the platform deletes a team, its repos stay scoped to the
   dangling id (a tombstone nobody matches) rather than going org-wide — see
-  `of_core::platform_events`.
+  `tower_core::platform_events`.
 - **Team membership is the platform's, asked per caller, and it fails closed.** Owners and admins
   see every repo and job. Anyone else sees org-wide rows (null `team_id`) plus those of the teams
-  `PlatformClient::member_teams` lists for them (`of_core::teams::TeamScope`, built by
+  `PlatformClient::member_teams` lists for them (`tower_core::teams::TeamScope`, built by
   `OrgCtx::team_scope` on the console and `Factory::team_scope` over MCP, **before** the
   transaction opens). A platform that cannot answer is `503 platform_unavailable`, never "all
   teams"; a team id the answer does not list (unknown, foreign, deleted) matches nothing. A row of
@@ -422,7 +422,7 @@ members, invites, teams, SSO, tokens, or usage. Those are the platform's, and
 - **Tombstones close the cache window.** Introspection is cached for 60 s, so `org.deleted` and
   `member.removed` first write `deleted_orgs` / `removed_members` (the latter swept after minutes)
   and both HTTP surfaces refuse a tombstoned org or user on every request
-  (`of_core::platform_events::revoked`; a database error there is a `503`). Only then does the
+  (`tower_core::platform_events::revoked`; a database error there is a `503`). Only then does the
   clean-up run. A request already past that check can still be on its way to a transaction, so
   every request-path tenant transaction opens through `platform_events::begin_live` (`Factory::tx`,
   `OrgCtx::begin`), which holds the org's lifecycle advisory lock shared and re-checks the
@@ -435,7 +435,7 @@ members, invites, teams, SSO, tokens, or usage. Those are the platform's, and
 
 The console API is read-only over the queue, and a unit test
 (`the_queue_is_read_only_over_the_console`) fails if a write ever appears under `/jobs`.
-Every job write belongs to `of-mcp`: the agent doing the work is the only party that can
+Every job write belongs to `tower-mcp`: the agent doing the work is the only party that can
 say when it is done, and a "mark complete" button would let a human put something into the
 audit trail that they did not observe.
 
@@ -491,10 +491,10 @@ Six things hold. The first explains the next four; the sixth stands on its own.
   The locale is the account's (`users.locale`, source of truth), cached in `localStorage` for
   first paint, and detected from `navigator.languages` when nothing was chosen — where `NULL`
   means "never chose", not "chose English". A change reloads the document, because `m.*()` are
-  plain calls with nothing for Svelte to invalidate. `of_core::i18n` owns the locale list and a
+  plain calls with nothing for Svelte to invalidate. `tower_core::i18n` owns the locale list and a
   test reads `web/project.inlang/settings.json` to prove the two halves agree.
 
-  **The MCP surface stays English.** `of-mcp` tool descriptions and `of-core` error messages are
+  **The MCP surface stays English.** `tower-mcp` tool descriptions and `tower-core` error messages are
   written for an LLM caller that has never read these docs; translating them fragments the one
   audience they have. Commands, config paths, product names and every wire value stay verbatim
   too — a translated `--transport http` is a broken command. `web/README.md` has the details.
@@ -508,7 +508,7 @@ Six things hold. The first explains the next four; the sixth stands on its own.
   longer has; a hidden tab does not poll; refreshes never overlap and a failing one backs off; and a
   tab nobody has touched for hours parks itself, because `sessions.rs` slides the 14-day idle
   deadline forward on every authenticated request and an open console would otherwise hold a session
-  open to the 90-day cap on an unattended desk. The console polls rather than consuming `of-core`'s
+  open to the 90-day cap on an unattended desk. The console polls rather than consuming `tower-core`'s
   change stream on purpose: a feed to the browser would mean a new console route and a held
   connection per open tab, for data that is a second stale at worst.
 
@@ -523,7 +523,7 @@ The paths the *server* names — `/login`, `/verify`, `/recover` and `/invite/{o
 are fixed by what the server puts in an invitation link, and cannot be renamed here alone.
 (The billing fix link is `OF_UPGRADE_URL` or the bare platform URL, so it names no console path.)
 
-## `of-server` — assembly, and the two things only it can get wrong
+## `tower-server` — assembly, and the two things only it can get wrong
 
 One binary mounts every surface on one port. Nothing here has business logic; what it has is
 the decisions no single crate could make.
@@ -531,7 +531,7 @@ the decisions no single crate could make.
 - **Route collisions are a startup panic, so a test builds the router.** `Router::merge`
   panics on a path registered twice rather than choosing, and `the_whole_router_assembles`
   reaches that panic before a deployment does. `/.well-known/oauth-protected-resource` is
-  `of-mcp`'s alone (it names the platform as the authorization server); `of-web` does not
+  `tower-mcp`'s alone (it names the platform as the authorization server); `tower-web` does not
   serve it.
 - **The console SPA is the fallback, but not under `/api`, `/auth`, `/oauth`, `/mcp`,
   `/.well-known`, `/platform`, or `/webhooks`.** `index.html` answering an unknown path is what makes a hard refresh of a
@@ -544,9 +544,9 @@ the decisions no single crate could make.
   only; the cross-tenant outbox depth stays out of an unauthenticated body) as detail only: a stalled meter declaration never changes its status code,
   because every replica shares the platform's answer.
 - **One `PlatformClient`, built once in `main` and shared.** It holds the introspection and
-  usage-status caches, so a second client would be a second, colder cache. `of-mcp`, `of-web`,
+  usage-status caches, so a second client would be a second, colder cache. `tower-mcp`, `tower-web`,
   and the usage shipper all take the same `Arc`.
-- **The usage shipper is a task of this binary** (`of_billing::outbox::run`, spawned in
+- **The usage shipper is a task of this binary** (`tower_billing::outbox::run`, spawned in
   `main`), declaring the meters and then draining `usage_outbox` to the platform with per-row
   backoff. It stops on shutdown after a final flush, except while it is still waiting for the
   meter declaration: then it stops without one (shipping metered rows for an undeclared meter
@@ -554,7 +554,7 @@ the decisions no single crate could make.
   An image that predates a meter rename (rolled back past `0006_meter_otto_tower.sql`, or still
   running beside a newer one during a deploy) keeps enqueuing the retired key, which would ship
   under an undeclared meter and be dead-lettered as `unknown_meter`. So the shipper maps every row
-  it ships through `of_billing::outbox::current_meter` (`RETIRED_METERS`, beside
+  it ships through `tower_billing::outbox::current_meter` (`RETIRED_METERS`, beside
   `METER_DECLARATIONS`), and before it starts `main` runs `outbox::rewrite_retired_meters`, which
   moves the queued rows themselves, per org with both guards. A rename of a meter adds its pair to
   `RETIRED_METERS` as well as writing its migration.
@@ -582,7 +582,7 @@ released before it continues — graceful shutdown, a test tearing down — call
 
 ## Migrations
 
-Append-only, one file per concern, in `crates/of-core/migrations/`. Never edit a migration
+Append-only, one file per concern, in `crates/tower-core/migrations/`. Never edit a migration
 that has been applied anywhere; add a new one.
 
 **There is exactly one exception, and it is done.** `0001_baseline.sql` is a squashed,
@@ -598,7 +598,7 @@ baseline's promise: no migration may create an identity table or reference one.
 
 The schema has **no foreign keys to anything the platform owns** (orgs, users, teams): they are
 in another database. Intra-domain keys (jobs → repos, and so on) are kept. Cleanup after a
-platform-side deletion is the platform's lifecycle webhooks' job (`of_core::platform_events`),
+platform-side deletion is the platform's lifecycle webhooks' job (`tower_core::platform_events`),
 not `ON DELETE CASCADE`'s.
 
 ## Authentication
@@ -617,30 +617,30 @@ means in this repository:
   mints tokens for; it is never derived from a `Host` header, which an attacker controls.
 - **A redirect host is answered before anything else.** `OF_REDIRECT_HOSTS` names hosts that only
   `308` to `OF_PUBLIC_URL` + the raw path and query, with an empty body, for every method and path
-  (webhooks and OAuth callbacks included; nothing is proxied). It is `of-server`'s outermost layer, so
+  (webhooks and OAuth callbacks included; nothing is proxied). It is `tower-server`'s outermost layer, so
   allow-listing, auth and `mark` never see the request. It matches on `Host` (else the URI authority),
   never `X-Forwarded-Host`, and the `Location` never takes a scheme or host from the request. A host
   also in `OF_ALLOWED_HOSTS`/`OF_LEGACY_HOSTS`, or the public host, stops startup.
 - **A legacy host changes what is advertised, never what is accepted.** During a rename's
-  deprecation window `OF_LEGACY_HOSTS` names the old host(s). `of_mcp::legacy::mark`, `of-server`'s
+  deprecation window `OF_LEGACY_HOSTS` names the old host(s). `tower_mcp::legacy::mark`, `tower-server`'s
   outermost layer, reads the origin host (`X-Forwarded-Host`, which the Worker sets, else `Host`),
   stamps `Deprecation`/`Link`/`Sunset` on every response through a legacy host, and leaves a
   `Legacy` marker that discovery, the `401` challenge and `initialize` read to name the legacy URL
   and the successor. The host only selects among configured values; introspection still asks as
   `OF_RESOURCE_URI` (`a_legacy_host_never_chooses_the_audience`). The console cannot work on a legacy
   host (`/auth/login` there would set its PKCE cookie on a host the platform never sends the browser
-  back to, and its cookie writes would fail CSRF), so `of-server`'s `legacy_console_redirect`, just
+  back to, and its cookie writes would fail CSRF), so `tower-server`'s `legacy_console_redirect`, just
   inside `mark`, answers a legacy-host request for exactly `/auth/login` or for anything that would
   reach the SPA fallback (not under `API_PREFIXES`, not a health probe) with a `308` to the same path
   and query on `OF_PUBLIC_URL`. `/mcp`, discovery, `/api`, the webhook receivers and
   `/platform/webhooks` are never redirected. Production is not behind the Worker, so this is the
   redirect that runs there; the Worker's own copy applies only to a Worker-fronted deployment.
 - **Discovery.** `/.well-known/oauth-protected-resource` (RFC 9728) names the platform in
-  `authorization_servers` and lists `of_core::scopes::KNOWN`; the `401` challenge points at it.
+  `authorization_servers` and lists `tower_core::scopes::KNOWN`; the `401` challenge points at it.
   This service serves no authorization-server metadata, registration, authorize, or token endpoint.
-- **Registration is an operator step at the platform** (`otto-platform-server resource register`,
+- **Registration is an operator step at the platform** (`savvagent-platform-server resource register`,
   `set-webhook`), not something this binary does at startup. The scope list registered there must
-  match `of_core::scopes`. See `docs/deploy/fly.md`.
+  match `tower_core::scopes`. See `docs/deploy/fly.md`.
 - **Identity reads go through `PlatformClient`**: `member` (whoami), `team` (team checks), and
   `team_by_slug` (the console's `?team=` and the message tools' team channels, through
   `VerifiedTeam::by_slug`). Each treats "the platform could not answer"
@@ -653,12 +653,12 @@ means in this repository:
 ## Metering
 
 The billed unit is a completed job, not a tool call. Every MCP tool is free, but each call is
-still recorded and classified in `of-billing::classify`, so a price can be reintroduced without
+still recorded and classified in `tower-billing::classify`, so a price can be reintroduced without
 losing history. Every completed job, through `complete_job` or an inbound ticket close, writes
-exactly one completion row through `of_billing::record_job_completed`, in the same transaction
+exactly one completion row through `tower_billing::record_job_completed`, in the same transaction
 as the state change: billed (`otto-tower/jobs_completed`, quantity 1) or an unmetered,
 unbilled row. Nothing else writes a completion row, so `org_counters.jobs_completed_total`
-equals the number of completion rows (a parity test in `of-web/tests/webhooks_http.rs`). `watch` is a continuous long poll, which is why per-call
+equals the number of completion rows (a parity test in `tower-web/tests/webhooks_http.rs`). `watch` is a continuous long poll, which is why per-call
 pricing was never viable.
 
 The platform owns plans, standing, and monthly totals; this service owns the *record*. Four
@@ -667,7 +667,7 @@ rules hold, and the first is what makes the others true:
 1. **The record is written inside the work's own transaction.** `Factory::charge` is the first
    thing after `self.tx(...)` and inserts a `usage_outbox` row (with a fresh `event_id`) in that
    transaction. `complete_job` instead records its completion, billed, through
-   `Meter::charge_completion`. The ticket-close path (`of-web/src/routes/webhooks.rs`) records
+   `Meter::charge_completion`. The ticket-close path (`tower-web/src/routes/webhooks.rs`) records
    one completion row after `close_from_ticket` moves the job to Completed, in the webhook's
    transaction, billed only when the job was ever claimed (`attempts > 0`: claim history, not
    the status at the close, since `repend_job` and an expired claim return a worked job to
@@ -677,7 +677,7 @@ rules hold, and the first is what makes the others true:
    never lost. A close on a job already Completed (a later event, or a job completed through
    `complete_job`) is a no-op and writes no second row. `watch` is the one exception — it meters in a short transaction of its own, because
    holding one open across a thirty-second poll would pin a connection per idle agent.
-2. **Delivery is a background task, and it is idempotent.** `of_billing::outbox::run` first
+2. **Delivery is a background task, and it is idempotent.** `tower_billing::outbox::run` first
    declares the meters in `METER_DECLARATIONS` with the platform (retrying until it succeeds;
    nothing ships meanwhile, since the platform rejects an undeclared meter as `unknown_meter`),
    then claims due rows (`FOR UPDATE SKIP LOCKED`, `next_attempt_at` as claim lease and retry
@@ -738,8 +738,8 @@ The version, `CHANGELOG.md`, and the git tag + GitHub Release are computed autom
 [release-please](https://github.com/googleapis/release-please) from commit history — nobody
 hand-edits a version number or writes a changelog entry. Because that computation reads a commit's
 *type*, not just its scope, the PR title (which becomes the squash-merge commit, per this repo's
-merge convention) must be `<type>(<scope>): <subject>` — e.g. `fix(of-core): reap expired job
-claims`, `feat(of-mcp): add a repo-scoped watch filter` — where `<type>` is one of `feat`, `fix`,
+merge convention) must be `<type>(<scope>): <subject>` — e.g. `fix(tower-core): reap expired job
+claims`, `feat(tower-mcp): add a repo-scoped watch filter` — where `<type>` is one of `feat`, `fix`,
 `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`, and `<scope>` is the existing
 crate/area vocabulary (a crate directory name, or `web`/`docs`/`ci`/`release`), omittable for a
 change with no single honest scope. A `pr-title` CI check enforces this on every PR.
