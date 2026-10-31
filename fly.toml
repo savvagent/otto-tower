@@ -1,8 +1,8 @@
-# otto-tower on Fly.io, org "savvagent". (The Fly app keeps its pre-rename name,
+# Savvagent Tower on Fly.io, org "savvagent". (The Fly app keeps its pre-rename name,
 # `otto-factory-mcp`: Fly cannot rename an app slug, and `otto-factory-mcp.fly.dev`
 # is the Worker's origin.)
 #
-# A resource server of the otto platform (https://otto.savvagent.com): identity, OAuth,
+# A resource server of the Savvagent platform (https://savvagent.com): identity, OAuth,
 # orgs, teams, and billing live there; this app holds only the coordination domain.
 #
 # Database: database `otto_factory` on `otto-db`, a standalone (unmanaged) Fly
@@ -14,16 +14,16 @@
 # `fly postgres attach`, is a superuser, so it BYPASSES RLS entirely, FORCE included:
 # isolation rests wholly on `otto_tenant::Db::begin` issuing `SET LOCAL ROLE otto_app`,
 # and any statement that runs directly on the pool (every migration, the usage shipper)
-# sees every org's rows. otto-tower keeps its own migration history -- a squashed
+# sees every org's rows. Savvagent Tower keeps its own migration history -- a squashed
 # domain-only baseline since the platform cutover -- and never runs the platform's.
 #
 # Secrets are NOT in this file -- `fly secrets set` puts these in the machine's
 # environment (docs/deploy/fly.md):
 #   DATABASE_URL                from `fly postgres attach`
 #   OF_ENCRYPTION_KEY           openssl rand -base64 32
-#   OF_INTROSPECTION_SECRET     otto_rs_...   printed once by the platform's
-#                               `otto-platform-server resource register`
-#   OF_PLATFORM_WEBHOOK_SECRET  otto_whsec_... printed once by its `resource set-webhook`
+#   OF_INTROSPECTION_SECRET     sav_rs_...    printed once by the platform's
+#                               `resource rotate-secret`
+#   OF_PLATFORM_WEBHOOK_SECRET  sav_whsec_... printed once by its `resource set-webhook`
 # Everything below is configuration a reader is meant to see.
 
 app = "otto-factory-mcp"
@@ -40,27 +40,33 @@ primary_region = "iad"
   # still answers, but nothing advertises it: the discovery pointer in a 401 and
   # the tracker OAuth callbacks are built from OF_PUBLIC_URL.
   #
-  # The canonical host since the rename cutover (docs/deploy/fly.md, step 8).
-  OF_PUBLIC_URL = "https://otto-tower.savvagent.com"
+  # The canonical host since the Savvagent rebrand (docs/deploy/fly.md, "Runbook:
+  # move to tower.savvagent.com").
+  OF_PUBLIC_URL = "https://tower.savvagent.com"
   # The token audience: exactly the resource_uri registered at the platform
   # (`otto-platform-server resource register <this>`), and the HTTP Basic user on
   # every call this app makes to it. Passkeys are NOT bound to this hostname any
   # more -- they belong to the platform's.
-  OF_RESOURCE_URI = "https://otto-tower.savvagent.com/mcp"
-  # The pre-rename host, still served with deprecation notices until the sunset.
-  # Clear both after `resource drop-alias` (docs/deploy/fly.md, step 11).
-  OF_LEGACY_HOSTS = "otto-factory.savvagent.com"
-  OF_LEGACY_SUNSET = "2026-10-22T00:00:00Z"
+  OF_RESOURCE_URI = "https://tower.savvagent.com/mcp"
+  # Hosts accepted in the Host header besides OF_PUBLIC_URL's own. The previous
+  # name, `otto-tower.savvagent.com`, is a live alias at the platform until
+  # 2027-06-30, so a client still configured with it must keep working; the Fly
+  # origin host is listed because a Cloudflare Worker in front would reach this
+  # app with it (docs/deploy/cloudflare.md, trap 1) and it is our own name, so it
+  # costs nothing to accept. The retired `otto-factory.savvagent.com` is gone: its
+  # sunset passed and the platform alias was dropped, so OF_LEGACY_HOSTS and
+  # OF_LEGACY_SUNSET are no longer set (the support for them stays in of-server).
+  OF_ALLOWED_HOSTS = "otto-factory-mcp.fly.dev,otto-tower.savvagent.com"
   # The OAuth authorization server, identity directory, and billing system of
   # record. Advertised to MCP clients as this resource's authorization server.
   OF_PLATFORM_URL = "https://savvagent.com"
   # The console's OAuth client at the platform, for console sign-in. NOT a secret
   # (a public client; PKCE is what binds a code to its browser). Printed by
-  # `otto-platform-server client register --name "otto-tower console"
-  # --redirect-uri https://otto-tower.savvagent.com/auth/callback --first-party`
+  # `otto-platform-server client register --name "Savvagent Tower console"
+  # --redirect-uri https://tower.savvagent.com/auth/callback --first-party`
   # (docs/deploy/fly.md). Unset, `/auth/login` answers 503
   # console_login_disabled and everything else runs.
-  OF_CONSOLE_CLIENT_ID = "otto_client_8ClmY61CJPC5BJHULc1Kug15hbSvw0vAy6CxUuXMZUY"
+  OF_CONSOLE_CLIENT_ID = "sav_client_XRACC-VcMXZQpX7jG_8Oplm9IQNTV-KrK6KdxJE-MCk"
   OF_STATIC_DIR = "/srv/console"
   OF_LOG_FORMAT = "json"
   RUST_LOG = "info,of_server=info,of_mcp=info,of_web=info"

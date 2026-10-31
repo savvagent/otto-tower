@@ -534,7 +534,7 @@ fn inbound_github_comment_already_counted_is_dropped() {
 
 /// A comment is not part of the issue body the stored revision describes, so a
 /// comment no newer than that revision (delivered after a later issue edit or
-/// otto-tower's own write-back, or made in the same second) is still a change
+/// Savvagent Tower's own write-back, or made in the same second) is still a change
 /// the job has not counted.
 #[test]
 fn inbound_github_comment_older_than_the_stored_revision_is_changed() {

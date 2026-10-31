@@ -1,4 +1,4 @@
-//! otto-tower server binary. Assembles every HTTP surface on one port.
+//! Savvagent Tower server binary. Assembles every HTTP surface on one port.
 
 use anyhow::{Context, Result};
 use of_billing::outbox::ShipperConfig;
@@ -206,19 +206,19 @@ async fn sweep_loop(db: Db, mut shutdown: tokio::sync::watch::Receiver<bool>) {
 async fn check_platform(platform: &otto_resource::PlatformClient, config: &Config) {
     match platform.usage_status(uuid::Uuid::nil()).await {
         Ok(_) | Err(otto_resource::Error::NotFound) => {
-            tracing::info!(platform = %config.platform_url, "the otto platform accepted this service's credential")
+            tracing::info!(platform = %config.platform_url, "the Savvagent platform accepted this service's credential")
         }
         Err(otto_resource::Error::Unauthorized) => tracing::error!(
             platform = %config.platform_url,
             resource_uri = %config.resource_uri,
-            "the otto platform REJECTED this service's credential: no token can be \
+            "the Savvagent platform REJECTED this service's credential: no token can be \
              validated and no usage can be shipped. Check OF_INTROSPECTION_SECRET and that \
              OF_RESOURCE_URI is the resource_uri this service was registered with"
         ),
         Err(e) => tracing::warn!(
             platform = %config.platform_url,
             error = %e,
-            "could not reach the otto platform at startup; continuing"
+            "could not reach the Savvagent platform at startup; continuing"
         ),
     }
 }

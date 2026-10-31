@@ -1,7 +1,7 @@
 //! The console's login sessions: a platform token pair held for a browser.
 //!
 //! The console signs people in with an OAuth authorization-code + PKCE flow
-//! against the otto platform (`of-web`'s `/auth/*`). What that leaves this
+//! against the Savvagent platform (`of-web`'s `/auth/*`). What that leaves this
 //! service holding is a [`Session`]: the user and org the platform vouched for,
 //! and the access/refresh token pair it issued, sealed at rest. The browser holds
 //! only a random cookie; the database holds only that cookie's SHA-256

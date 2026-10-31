@@ -1,6 +1,6 @@
 //! The OAuth resource server: what stands between a bearer token and the queue.
 //!
-//! The authorization server is the otto platform; it mints tokens and this
+//! The authorization server is the Savvagent platform; it mints tokens and this
 //! service never sees how. This module is the *resource* server, and it has
 //! exactly three jobs, in this order:
 //!
@@ -201,7 +201,7 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// RFC 9728 and is the field MCP clients actually read.
 fn challenge(metadata_url: &str, reason: &str) -> Response {
     let header = format!(
-        r#"Bearer realm="otto-tower", error="invalid_token", error_description="{reason}", resource_metadata="{metadata_url}""#
+        r#"Bearer realm="savvagent-tower", error="invalid_token", error_description="{reason}", resource_metadata="{metadata_url}""#
     );
 
     let mut response = (
@@ -218,7 +218,7 @@ fn challenge(metadata_url: &str, reason: &str) -> Response {
     // pointer and leave the client with a bare 401 it cannot act on, so fall
     // back to the pointer alone rather than to nothing.
     let value = http::HeaderValue::from_str(&header)
-        .unwrap_or_else(|_| http::HeaderValue::from_static(r#"Bearer realm="otto-tower""#));
+        .unwrap_or_else(|_| http::HeaderValue::from_static(r#"Bearer realm="savvagent-tower""#));
     response
         .headers_mut()
         .insert(http::header::WWW_AUTHENTICATE, value);

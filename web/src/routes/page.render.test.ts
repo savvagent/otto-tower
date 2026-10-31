@@ -3,7 +3,7 @@
  * The public front page, as a signed-out visitor sees it.
  *
  * The `claude mcp add` example names the server, and that name is what every
- * tool is called under (`mcp__<name>__*`). It must be `otto-tower`, the name
+ * tool is called under (`mcp__<name>__*`). It must be `savvagent-tower`, the name
  * the docs, the client skills and the server's own instructions use; a page
  * that teaches `factory` gives a reader tools no skill refers to.
  */
@@ -41,13 +41,13 @@ afterEach(() => {
 });
 
 describe('the front page', () => {
-  it('names the MCP server otto-tower in its claude mcp add example', () => {
+  it('names the MCP server savvagent-tower in its claude mcp add example', () => {
     const instance = mount(Page, { target: container });
     const command = [...container.querySelectorAll('code')]
       .map((code) => code.textContent ?? '')
       .find((text) => text.includes('claude mcp add'));
     expect(command).toBeDefined();
-    expect(command).toMatch(/^claude mcp add --transport http otto-tower https:\/\/\S+\/mcp$/);
+    expect(command).toMatch(/^claude mcp add --transport http savvagent-tower https:\/\/\S+\/mcp$/);
     expect(command).not.toMatch(/\bfactory\b/);
     unmount(instance);
   });

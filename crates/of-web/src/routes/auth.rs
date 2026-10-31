@@ -1,7 +1,7 @@
 //! The console's sign-in: OAuth authorization code + PKCE against the platform.
 //!
 //! ```text
-//!  browser                    otto-tower                           otto platform
+//!  browser                    Savvagent Tower                           Savvagent platform
 //!     │ GET /auth/login?org=acme&next=/o/acme/jobs                       │
 //!     ├───────────────────────────►│ state, PKCE verifier → sealed cookie│
 //!     │◄── 303 + __Host-of_oauth ──┤                                     │

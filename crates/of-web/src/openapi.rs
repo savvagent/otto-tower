@@ -77,13 +77,13 @@ pub fn document(endpoints: &[Endpoint]) -> Value {
     json!({
         "openapi": "3.1.0",
         "info": {
-            "title": "otto-tower console API",
+            "title": "Savvagent Tower console API",
             "version": env!("CARGO_PKG_VERSION"),
             "description":
                 "The console's REST surface: repos, the queue, tracker connections, and \
                  this service's domain audit trail. Identity (sign-in, accounts, orgs, \
                  members, teams, SSO, tokens, usage) and the OAuth 2.1 authorization \
-                 server live in the otto platform, not here. Authentication is a platform \
+                 server live in the Savvagent platform, not here. Authentication is a platform \
                  access token, introspected on every request, presented either as a bearer \
                  token or, for the console in a browser, held server-side behind a session \
                  cookie obtained by signing in through the platform (`/auth/login`). A \
@@ -98,7 +98,7 @@ pub fn document(endpoints: &[Endpoint]) -> Value {
                     "type": "http",
                     "scheme": "bearer",
                     "description":
-                        "A token issued by the otto platform for this resource server \
+                        "A token issued by the Savvagent platform for this resource server \
                          (OAuth access token or personal access token). Its org is fixed \
                          when it is issued; the `{org}` path segment must name that org.",
                 },
@@ -108,7 +108,7 @@ pub fn document(endpoints: &[Endpoint]) -> Value {
                     "name": "__Host-of_session",
                     "description":
                         "The console's session cookie, set by `/auth/callback` after a \
-                         sign-in through the otto platform. HttpOnly, Secure, SameSite=Lax. \
+                         sign-in through the Savvagent platform. HttpOnly, Secure, SameSite=Lax. \
                          It is bound to one org: asking for another answers `401` with \
                          code `org_session_mismatch`, and the client signs in again with \
                          `org=<slug>`. Writes must carry this site's `Origin`.",
@@ -372,7 +372,7 @@ fn entity_schemas() -> Value {
             "name": { "type": "string" },
             "provider": { "type": "string", "enum": ["github", "gitlab", "bitbucket", "other"] },
             "defaultBranch": { "type": "string" },
-            "teamId": { "type": ["string", "null"], "format": "uuid", "description": "A team id from the otto platform. Checked against the platform before it is stored; an unknown team is refused, never read as org-wide." },
+            "teamId": { "type": ["string", "null"], "format": "uuid", "description": "A team id from the Savvagent platform. Checked against the platform before it is stored; an unknown team is refused, never read as org-wide." },
             "defaultAgentType": { "type": ["string", "null"] },
             "trackerBinding": {
                 "type": "object",
@@ -488,13 +488,13 @@ fn queue_schemas() -> Value {
             "type": "object",
             "description":
                 "One unit of coordinated work, always anchored to a repo. `metadata` \
-                 is opaque — otto-tower never reads it; it is where a customer's own \
+                 is opaque — Savvagent Tower never reads it; it is where a customer's own \
                  skill keeps whatever its methodology needs.",
             "properties": {
                 "id": { "type": "string", "examples": ["job-42"] },
                 "orgId": uuid,
                 "repoId": uuid,
-                "teamId": { "type": ["string", "null"], "format": "uuid", "description": "A team id from the otto platform. Checked against the platform before it is stored; an unknown team is refused, never read as org-wide." },
+                "teamId": { "type": ["string", "null"], "format": "uuid", "description": "A team id from the Savvagent platform. Checked against the platform before it is stored; an unknown team is refused, never read as org-wide." },
                 "title": { "type": "string" },
                 "description": { "type": ["string", "null"] },
                 "status": {
@@ -605,7 +605,7 @@ fn response_schemas() -> Value {
                 "platformUrl": {
                     "type": "string",
                     "description":
-                        "The otto platform's console, for members, teams, SSO, usage, \
+                        "The Savvagent platform's console, for members, teams, SSO, usage, \
                          tokens, and the org list.",
                 },
             },
@@ -655,7 +655,7 @@ fn request_schemas() -> Value {
                 },
                 "provider": { "type": ["string", "null"] },
                 "defaultBranch": { "type": ["string", "null"] },
-                "teamId": { "type": ["string", "null"], "format": "uuid", "description": "A team id from the otto platform. Checked against the platform before it is stored; an unknown team is refused, never read as org-wide." },
+                "teamId": { "type": ["string", "null"], "format": "uuid", "description": "A team id from the Savvagent platform. Checked against the platform before it is stored; an unknown team is refused, never read as org-wide." },
                 "defaultAgentType": {
                     "type": ["string", "null"],
                     "description": "A free-form hint. Never validated against a list.",
@@ -671,7 +671,7 @@ fn request_schemas() -> Value {
             "properties": {
                 "name": { "type": ["string", "null"] },
                 "defaultBranch": { "type": ["string", "null"] },
-                "teamId": { "type": ["string", "null"], "format": "uuid", "description": "A team id from the otto platform. Checked against the platform before it is stored; an unknown team is refused, never read as org-wide." },
+                "teamId": { "type": ["string", "null"], "format": "uuid", "description": "A team id from the Savvagent platform. Checked against the platform before it is stored; an unknown team is refused, never read as org-wide." },
                 "defaultAgentType": { "type": ["string", "null"] },
                 "active": { "type": ["boolean", "null"] },
                 "addRemotes": { "type": "array", "items": { "type": "string" } },

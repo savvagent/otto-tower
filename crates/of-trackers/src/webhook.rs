@@ -130,7 +130,7 @@ pub struct IssueSnapshot {
 pub struct CommentSnapshot {
     pub id: String,
     pub body: String,
-    /// GitHub's `comment.user.type == "Bot"`: an app wrote it, otto-tower's own
+    /// GitHub's `comment.user.type == "Bot"`: an app wrote it, Savvagent Tower's own
     /// write-back comments included. False when GitHub sends no `user`, and
     /// always false for JIRA, whose automation payload does not say.
     pub author_is_bot: bool,

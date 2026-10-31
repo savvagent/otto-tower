@@ -2,7 +2,7 @@
 //!
 //! This crate is the product's front door: one HTTPS endpoint that any
 //! MCP-speaking coding agent can be pointed at, with OAuth 2.1 in front of it
-//! (the otto platform is the authorization server) and `of-core`'s
+//! (the Savvagent platform is the authorization server) and `of-core`'s
 //! tenant-pinned queue behind it.
 //!
 //! ```text
@@ -56,7 +56,7 @@ pub use server::Factory;
 /// Deployment-dependent settings the MCP surface cannot infer for itself.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// The otto platform: authorization server, identity directory, billing.
+    /// The Savvagent platform: authorization server, identity directory, billing.
     pub platform: Arc<PlatformClient>,
     /// The platform's public base URL, advertised as this resource's
     /// authorization server in its protected-resource metadata.
@@ -143,7 +143,7 @@ impl Config {
 ///   validated by the platform.
 ///
 /// The transport runs **stateless** (`stateful_mode: false`, `json_response:
-/// true`). otto-tower never pushes to a client — `watch` is a long poll the
+/// true`). Savvagent Tower never pushes to a client — `watch` is a long poll the
 /// agent initiates — so a server-held session would buy nothing and cost the
 /// one thing a hosted multi-replica deployment cannot easily give it: every
 /// request from one client landing on the replica that holds its session.

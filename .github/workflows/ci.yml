@@ -308,8 +308,8 @@ jobs:
     # as release-please's `release` environment above.
     environment:
       name: production
-      # Flipped to the otto-tower host at the cutover (docs/deploy/fly.md, step 8a).
-      url: https://otto-tower.savvagent.com
+      # Flipped to the tower.savvagent.com host (docs/deploy/fly.md, "Runbook: move to tower.savvagent.com").
+      url: https://tower.savvagent.com
     permissions:
       contents: read
     steps:

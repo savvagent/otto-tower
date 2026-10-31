@@ -319,27 +319,28 @@ async fn connect_jira(
     // is single-use so there is no second round trip to ask with, and choosing
     // one silently is how an org ends up syncing to a site nobody meant. Stop,
     // and name the sites so the admin knows which grant to narrow.
-    let site =
-        match sites.as_slice() {
-            [only] => only,
-            [] => return Err(ApiError::bad_request(
+    let site = match sites.as_slice() {
+        [only] => only,
+        [] => {
+            return Err(ApiError::bad_request(
                 "that Atlassian authorization granted access to no JIRA site. Run Connect JIRA \
                  again and grant access to the site whose issues this org works from.",
-            )),
-            many => {
-                let names = many
-                    .iter()
-                    .map(|s| format!("{} ({})", s.name, s.url))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(ApiError::bad_request(format!(
-                    "that Atlassian authorization covers {} JIRA sites ({names}), and otto-tower \
-                 stores one site per organization. Run Connect JIRA again and grant access to \
+            ))
+        }
+        many => {
+            let names = many
+                .iter()
+                .map(|s| format!("{} ({})", s.name, s.url))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ApiError::bad_request(format!(
+                "that Atlassian authorization covers {} JIRA sites ({names}), and \
+                 Savvagent Tower stores one site per organization. Run Connect JIRA again and grant access to \
                  only the site this org works from.",
-                    many.len()
-                )));
-            }
-        };
+                many.len()
+            )));
+        }
+    };
 
     let sealed = tokens
         .seal_refresh_token(&state.cipher)

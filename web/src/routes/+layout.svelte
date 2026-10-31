@@ -72,7 +72,7 @@
    * skeleton to a signed-out visitor and then flashes it away.
    *
    * Sign-in is **a full navigation** to `/auth/login` — a server route that
-   * answers a redirect to the otto platform — and it brings the visitor back to
+   * answers a redirect to the Savvagent platform — and it brings the visitor back to
    * this same URL afterwards.
    *
    * `signingOut` suppresses the guard for the moment between clearing the
@@ -103,7 +103,7 @@
   }
 
   /**
-   * Where "Back to otto" goes: the platform's console.
+   * Where "Back to Savvagent" goes: the platform's console.
    *
    * A signed-in session already says where the platform is. A visitor without
    * one — signed out, or whose session lookup failed — asks the open discovery
@@ -143,7 +143,7 @@
 <div class="flex min-h-full flex-col">
   <header class="border-b border-edge/60 bg-surface/40">
     <div class="mx-auto flex w-full max-w-6xl items-center gap-4 px-4 py-3">
-      <a href="/" class="flex items-center gap-2" aria-label="otto-tower">
+      <a href="/" class="flex items-center gap-2" aria-label="Savvagent Tower">
         <Logo class="size-6 text-accent" />
       </a>
 

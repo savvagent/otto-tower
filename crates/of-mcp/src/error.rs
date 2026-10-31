@@ -125,7 +125,7 @@ fn envelope(fault: Fault, text: String, code: &'static str, retriable: bool) -> 
         }
         Fault::Platform => {
             tracing::error!(error = %text, "platform lookup failed for an MCP caller");
-            "the otto platform could not be reached to check this; nothing was changed. \
+            "the Savvagent platform could not be reached to check this; nothing was changed. \
              Retry shortly."
                 .to_string()
         }

@@ -37,7 +37,7 @@ export interface SessionUser {
  * `GET /api/session`: who is signed in to the console, in which org, and what
  * they may do there.
  *
- * `platformUrl` is where the otto platform's own console lives — members, teams,
+ * `platformUrl` is where the Savvagent platform's own console lives — members, teams,
  * SSO, usage, tokens, the account, and the list of orgs are managed there, not
  * here (`$lib/platform`).
  */
@@ -147,7 +147,7 @@ export interface Job {
   ticketRef: string | null;
   tracker: 'jira' | 'github' | null;
   agentType: string | null;
-  /** Opaque to otto-tower. A customer's own skill owns the shape. */
+  /** Opaque to Savvagent Tower. A customer's own skill owns the shape. */
   metadata: Record<string, unknown>;
   createdAt: string;
   startedAt: string | null;

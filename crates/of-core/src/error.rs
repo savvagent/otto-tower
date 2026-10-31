@@ -138,7 +138,7 @@ pub enum Error {
     /// read as "org-wide".
     #[error(
         "team {team} was not found in this organization. Teams are managed in the \
-         otto platform console; use a team id from there, or omit the team to make \
+         Savvagent platform console; use a team id from there, or omit the team to make \
          the repo organization-wide."
     )]
     TeamNotFound { team: String },
@@ -151,7 +151,7 @@ pub enum Error {
     /// is wrong advice for a channel.
     #[error(
         "team {team} was not found in this organization, or you are not on it. Teams \
-         are managed in the otto platform console; name a team you are on, or use a \
+         are managed in the Savvagent platform console; name a team you are on, or use a \
          repo's channel (repo or remote) instead."
     )]
     TeamChannelNotFound { team: String },
@@ -203,7 +203,9 @@ pub enum Error {
     /// The platform could not answer an identity question (unreachable, 5xx,
     /// rejected our credential, unreadable body). Whatever was being decided is
     /// refused: callers fail closed on this, never open.
-    #[error("the otto platform could not be reached to check this ({0}); nothing was changed")]
+    #[error(
+        "the Savvagent platform could not be reached to check this ({0}); nothing was changed"
+    )]
     Platform(#[from] otto_resource::Error),
 
     /// A failure from the tenant substrate (`otto-tenant`): an unknown org, a

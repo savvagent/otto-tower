@@ -134,7 +134,7 @@ pub struct Job {
     pub tracker: Option<Tracker>,
     pub remote_revision: Option<String>,
     pub agent_type: Option<String>,
-    /// Opaque to otto-tower. Customers' own skills own the shape.
+    /// Opaque to Savvagent Tower. Customers' own skills own the shape.
     pub metadata: serde_json::Value,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -191,10 +191,10 @@ pub struct Job {
     /// request" — only `cancel_requested_at == None` means that.
     pub cancel_requested_by: Option<UserId>,
     pub cancel_reason: Option<String>,
-    /// When the linked issue last changed in a way otto-tower did not make
-    /// itself, as far as otto-tower has seen. Set by a comment on the linked
+    /// When the linked issue last changed in a way Savvagent Tower did not make
+    /// itself, as far as Savvagent Tower has seen. Set by a comment on the linked
     /// GitHub issue from someone other than a bot, arriving by webhook, or by
-    /// `sync_ticket` finding the issue changed since otto-tower last touched
+    /// `sync_ticket` finding the issue changed since Savvagent Tower last touched
     /// it. An edit to the issue's own title or body arriving by webhook does
     /// not set it (that rewrites this job's description instead). `None` when
     /// no such change has been seen on the ticket the job is linked to now.
@@ -677,7 +677,7 @@ pub trait JobsExt {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Record that the job's linked issue changed at `at`, by someone other
-    /// than otto-tower. Keeps the later of `at` and any time already recorded,
+    /// than Savvagent Tower. Keeps the later of `at` and any time already recorded,
     /// so an out-of-order webhook cannot move the mark backwards. Whether the
     /// job then reads as `ticket_stale` is decided at read time against when
     /// its title/description were last written: a change older than that (or

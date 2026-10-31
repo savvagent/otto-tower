@@ -167,6 +167,10 @@ impl From<otto_resource::Role> for Role {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WhoAmI {
+    /// Which service answered: `Savvagent Tower`. Matches `resource_name` in the
+    /// protected-resource metadata, so an agent holding several Savvagent
+    /// connections can tell them apart.
+    pub service: &'static str,
     pub user: UserOut,
     pub org: OrgOut,
     /// The caller's role in this org, as the platform last reported it.

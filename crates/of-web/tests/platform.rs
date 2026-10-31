@@ -1,4 +1,4 @@
-//! The console API as a resource server of the otto platform.
+//! The console API as a resource server of the Savvagent platform.
 //!
 //! What is under test here is the seam between this service and the platform:
 //! who a bearer token says its holder is, which org it opens, what happens when
